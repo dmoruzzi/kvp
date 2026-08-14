@@ -368,7 +368,7 @@ Default `docker compose up -d` runs app + tunnel (same as v1). The `observabilit
 - Trigger: push to `main` and tags `v*` (and PRs → build-only).
 - Buildx **`linux/amd64` only** (deliberate: no arm64 image), tags: branch ref, tag ref, short SHA, `latest` on default branch.
 - Push to `ghcr.io/<repo>` with `GITHUB_TOKEN`; scan image (e.g. `trivy`) and fail on critical findings.
-- On tag pushes, a `release` job cross-compiles the server for `linux/amd64` and `windows/amd64` (plus `SHA256SUMS.txt`) and attaches them to the GitHub release.
+- On every push (main or tags), a `release` job cross-compiles the server for `linux/amd64` and `windows/amd64` (plus `SHA256SUMS.txt`), creating a rolling release named after the ref (`main` for branch pushes, the tag name for `v*` tags) and attaching the binaries to it.
 
 ### 13.3 GrafanaCloud provisioning
 - On push to `main`: `terraform apply` for dashboards/alert rules, authenticated with a `GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN` stored as a CI secret (separate from the runtime write-only token in §11).
