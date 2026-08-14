@@ -141,7 +141,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 // isUIPath reports whether path is a static UI asset served without auth.
 func isUIPath(path string) bool {
 	switch path {
-	case "/", "/index.html", "/app.js":
+	case "/", "/index.html", "/style.css", "/app.js":
 		return true
 	}
 	return false

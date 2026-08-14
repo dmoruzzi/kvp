@@ -96,7 +96,7 @@ func (s *Server) handler() http.Handler {
 
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/", "/index.html", "/app.js":
+	case "/", "/index.html", "/style.css", "/app.js":
 		if r.Method != http.MethodGet {
 			s.methodNotAllowed(w, http.MethodGet)
 			return
@@ -111,7 +111,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 // "kvp"; the UI paths map to "index".
 func routeForPath(path string) string {
 	switch path {
-	case "/", "/index.html", "/app.js":
+	case "/", "/index.html", "/style.css", "/app.js":
 		return "index"
 	}
 	return "kvp"
@@ -138,8 +138,11 @@ func (s *Server) serveKeyDirect(w http.ResponseWriter, r *http.Request, key stri
 
 func (s *Server) serveUI(w http.ResponseWriter, r *http.Request, name string) {
 	file, ctype := "index.html", "text/html; charset=utf-8"
-	if strings.HasSuffix(name, ".js") {
+	switch {
+	case strings.HasSuffix(name, ".js"):
 		file, ctype = "app.js", "application/javascript; charset=utf-8"
+	case strings.HasSuffix(name, ".css"):
+		file, ctype = "style.css", "text/css; charset=utf-8"
 	}
 	f, err := s.opts.UI.Open(file)
 	if err != nil {

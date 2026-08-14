@@ -20,6 +20,7 @@ const testIndex = `<!doctype html><html><head><title>kvp</title></head><body>kvp
 
 var testIndexFS fs.FS = fstest.MapFS{
 	"index.html": &fstest.MapFile{Data: []byte(testIndex)},
+	"style.css":  &fstest.MapFile{Data: []byte(`body{background:#000}`)},
 	"app.js":     &fstest.MapFile{Data: []byte(`console.log("kvp")`)},
 }
 
@@ -261,7 +262,7 @@ func TestAuthRequired(t *testing.T) {
 
 func TestUIPublicWhenAuthConfigured(t *testing.T) {
 	h, _ := newTestServer(t, Options{APIKey: "secret"})
-	for _, path := range []string{"/", "/index.html", "/app.js"} {
+	for _, path := range []string{"/", "/index.html", "/style.css", "/app.js"} {
 		rr := doReq(t, h, "GET", path, "", nil)
 		if rr.Code != http.StatusOK {
 			t.Errorf("GET %s without key = %d, want 200", path, rr.Code)
