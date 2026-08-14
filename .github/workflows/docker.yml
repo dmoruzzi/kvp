@@ -40,6 +40,7 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
             type=sha,prefix=
+            type=sha,prefix=,format=long
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
 
       - name: build & push
