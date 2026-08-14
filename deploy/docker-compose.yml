@@ -22,7 +22,9 @@ services:
       KVP_RATE_LIMIT_RPS: ${KVP_RATE_LIMIT_RPS:-10}
       KVP_RATE_LIMIT_BURST: ${KVP_RATE_LIMIT_BURST:-20}
       KVP_API_KEY: ${KVP_API_KEY:-}
-      KVP_TRUSTED_PROXIES: ${KVP_TRUSTED_PROXIES:-}
+      # cloudflared peers from the kvp-net subnet below; trusting it lets kvp
+      # resolve the real client IP from CF-Connecting-IP / X-Forwarded-For.
+      KVP_TRUSTED_PROXIES: ${KVP_TRUSTED_PROXIES:-10.255.0.0/24}
       KVP_LOG_LEVEL: ${KVP_LOG_LEVEL:-info}
       KVP_OTEL_SERVICE_NAME: ${KVP_OTEL_SERVICE_NAME:-kvp}
       # The collector below is always part of the stack, so OTLP export is on
@@ -37,6 +39,8 @@ services:
       GRAFANA_CLOUD_STACK_ID: ${GRAFANA_CLOUD_STACK_ID:-}
       GRAFANA_CLOUD_API_TOKEN: ${GRAFANA_CLOUD_API_TOKEN:-}
       GRAFANA_CLOUD_REGION: ${GRAFANA_CLOUD_REGION:-}
+    networks:
+      - kvp-net
     healthcheck:
       test: ["CMD", "/usr/local/bin/hc"]
       interval: 30s
@@ -53,6 +57,8 @@ services:
     command: tunnel run --token ${TUNNEL_TOKEN:?TUNNEL_TOKEN is required in .env}
     environment:
       NO_AUTOUPDATE: "true"
+    networks:
+      - kvp-net
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.135.0
@@ -69,6 +75,8 @@ services:
     depends_on:
       kvp:
         condition: service_healthy
+    networks:
+      - kvp-net
 
   # Laptop-only debugging: standalone Prometheus scraping /metrics (127.0.0.1:9090).
   prometheus:
@@ -79,6 +87,14 @@ services:
       - "127.0.0.1:9091:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+networks:
+  # Fixed subnet so KVP_TRUSTED_PROXIES can be stable across restarts;
+  # Docker otherwise assigns the cloudflared IP dynamically per network.
+  kvp-net:
+    ipam:
+      config:
+        - subnet: 10.255.0.0/24
 
 volumes:
   kvp_data:

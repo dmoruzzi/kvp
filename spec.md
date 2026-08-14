@@ -159,7 +159,7 @@ Middleware runs in this order (public listener): request-id → access log → r
 | Server timeouts | `ReadHeaderTimeout` 5s, `ReadTimeout` 30s, `WriteTimeout` 30s, `IdleTimeout` 120s. |
 | Body limits | `http.MaxBytesReader` per request (§5.2). |
 | Rate limiting | In-memory token bucket per client IP (`KVP_RATE_LIMIT_RPS`, burst `KVP_RATE_LIMIT_BURST`, default 10/20). `429` + `Retry-After`. Exempts `/healthz`, `/readyz`, `/metrics` on the admin port. |
-| Client IP | Trust `CF-Connecting-IP`/`X-Forwarded-For` only when the peer is in `KVP_TRUSTED_PROXIES` (default empty → never trust forwarded headers). Compose sets it to the cloudflared service. |
+| Client IP | Trust `CF-Connecting-IP`/`X-Forwarded-For` only when the peer is in `KVP_TRUSTED_PROXIES` (default empty → never trust forwarded headers). Compose pins a fixed private subnet (`10.255.0.0/24`) for its network and sets `KVP_TRUSTED_PROXIES` to it, so the cloudflared peer is trusted while everything else is ignored. |
 | Security headers | `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and a strict CSP for `/` (default-src 'self'; no inline scripts — the UI is static, so this is feasible). |
 | Graceful shutdown | On SIGINT/SIGTERM: stop accepting, wait up to `KVP_SHUTDOWN_TIMEOUT` (default 15s) for in-flight requests, mark not-ready (`/readyz` → 503), flush OTel, close DB. |
 | Panic recovery | Recover middleware returns `500`, logs stack with trace ID, and records the error metric — a panic never kills the process. |
