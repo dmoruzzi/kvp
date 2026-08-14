@@ -28,7 +28,8 @@ services:
       # The collector below is always part of the stack, so OTLP export is on
       # by default. GrafanaCloud exports are gated by GRAFANA_CLOUD_STACK_ID /
       # GRAFANA_CLOUD_API_TOKEN (empty => collector falls back to file/stdout).
-      KVP_OTEL_EXPORTER_OTLP_ENDPOINT: ${KVP_OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      # kvp uses the HTTP/protobuf protocol, hence :4318 (4317 is gRPC).
+      KVP_OTEL_EXPORTER_OTLP_ENDPOINT: ${KVP_OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4318}
       KVP_BACKUP_DIR: ${KVP_BACKUP_DIR:-}
       KVP_BACKUP_INTERVAL: ${KVP_BACKUP_INTERVAL:-6h}
       KVP_BACKUP_RETENTION: ${KVP_BACKUP_RETENTION:-5}
