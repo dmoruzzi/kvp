@@ -6,66 +6,134 @@
 <title>KVP Store</title>
 <style>
   :root {
-    --bg: #0f1117; --panel: #171a21; --border: #2a2f3a;
-    --text: #e6e9ef; --muted: #9aa3b2; --accent: #4f8cff;
+    --bg: #0b0e14; --glow: #14203a;
+    --panel: #12161f; --border: #222a38; --border-strong: #2e3a4e;
+    --text: #e8ecf3; --muted: #94a0b3; --faint: #6b7688;
+    --accent: #4f8cff; --accent-hi: #7aa7ff;
     --ok: #3fb950; --err: #f85149;
+    --radius: 12px;
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 24px; font: 15px/1.5 system-ui, sans-serif;
-    background: var(--bg); color: var(--text);
+    margin: 0; min-height: 100vh;
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text);
+    background: radial-gradient(1100px 480px at 50% -220px, var(--glow), transparent 70%), var(--bg);
   }
-  main { max-width: 720px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  p.tag { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-  label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 6px; }
+  .page { max-width: 880px; margin: 0 auto; padding: 44px 24px 64px; }
+
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 30px; }
+  .badge {
+    width: 46px; height: 46px; border-radius: 13px; flex: none;
+    display: grid; place-items: center;
+    font-weight: 700; font-size: 19px; color: #fff;
+    background: linear-gradient(135deg, var(--accent), #7a5cff);
+    box-shadow: 0 8px 22px rgba(79, 140, 255, .28);
+  }
+  h1 { margin: 0; font-size: 22px; letter-spacing: .2px; }
+  .tagline { margin: 2px 0 0; color: var(--muted); font-size: 13.5px; }
+
+  .workspace {
+    display: grid; grid-template-columns: 5fr 6fr; gap: 16px; align-items: start;
+  }
+  @media (max-width: 760px) { .workspace { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px;
+  }
+  .card h2 { margin: 0 0 14px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--faint); }
+
+  label { display: block; font-size: 12.5px; color: var(--muted); margin: 0 0 5px; }
   input, textarea {
-    width: 100%; background: #0d0f14; color: var(--text);
-    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
-    font: inherit; margin-bottom: 12px;
+    width: 100%; background: #0d1117; color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+    font: inherit; margin-bottom: 12px; outline: none; transition: border-color .15s, box-shadow .15s;
   }
-  textarea { resize: vertical; min-height: 80px; font-family: ui-monospace, Consolas, monospace; }
-  .row { display: flex; gap: 8px; }
+  input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79, 140, 255, .18); }
+  textarea { resize: vertical; min-height: 96px; font-family: ui-monospace, Consolas, monospace; }
+  .field-hint { display: flex; justify-content: space-between; align-items: baseline; }
+  .field-hint .count { font-size: 11.5px; color: var(--faint); margin: -6px 0 10px; font-variant-numeric: tabular-nums; }
+
+  .actions { display: flex; gap: 10px; margin-top: 2px; }
   button {
-    flex: 1; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--border);
-    background: #21262e; color: var(--text); font: inherit; cursor: pointer;
+    flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border);
+    background: #1a2030; color: var(--text); font: inherit; font-weight: 500;
+    cursor: pointer; transition: border-color .15s, background .15s, transform .05s;
   }
-  button:hover { border-color: var(--accent); }
-  button[type="submit"] { background: #1f6feb; border-color: #1f6feb; }
-  button[type="submit"]:hover { background: #388bfd; }
-  #result {
-    white-space: pre-wrap; word-break: break-all;
+  button:hover { border-color: var(--border-strong); background: #202840; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: #1f6feb; border-color: #1f6feb; }
+  button.primary:hover { background: #388bfd; border-color: #388bfd; }
+
+  .result-head { display: flex; align-items: center; gap: 10px; margin: -4px 0 12px; }
+  .result-head h2 { margin: 0; }
+  .status {
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+    background: rgba(255, 255, 255, .05); border: 1px solid var(--border); color: var(--muted);
+  }
+  .status.ok { color: var(--ok); border-color: rgba(63, 185, 80, .4); background: rgba(63, 185, 80, .08); }
+  .status.err { color: var(--err); border-color: rgba(248, 81, 73, .4); background: rgba(248, 81, 73, .08); }
+  button.mini {
+    flex: none; margin-left: auto; padding: 4px 10px; font-size: 12px;
+    background: transparent; border-color: var(--border);
+  }
+  pre {
+    margin: 0; min-height: 168px; white-space: pre-wrap; word-break: break-all;
     font-family: ui-monospace, Consolas, monospace; font-size: 13px;
+    background: #0d1117; border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; overflow: auto; max-height: 320px;
   }
-  #result.ok { color: var(--ok); }
-  #result.err { color: var(--err); }
-  #result.meta { color: var(--muted); }
-  #value { display: none; }
+  pre.ok { color: var(--text); }
+  pre.err { color: var(--err); }
+  pre.meta { color: var(--faint); }
+
+  footer { margin-top: 26px; color: var(--faint); font-size: 12.5px; }
+  footer code {
+    font-family: ui-monospace, Consolas, monospace; background: rgba(255, 255, 255, .05);
+    padding: 1px 6px; border-radius: 5px; border: 1px solid var(--border);
+  }
 </style>
 </head>
 <body>
-<main>
-  <h1>KVP Store</h1>
-  <p class="tag">Key-value store with TTL. GET /&lt;key&gt; to read, POST /&lt;key&gt; to write.</p>
-
-  <section class="panel">
-    <label for="key">Key</label>
-    <input id="key" name="key" autocomplete="off" placeholder="e.g. config/env" value="config">
-    <label for="apikey">API key (optional; required for PUT/GET data)</label>
-    <input id="apikey" name="apikey" type="password" autocomplete="off" placeholder="X-API-Key value">
-    <label for="value">Value (POST only)</label>
-    <textarea id="value" name="value" placeholder="value to store"></textarea>
-    <div class="row">
-      <button type="submit" id="put">PUT /key</button>
-      <button type="button" id="get">GET /key</button>
+<main class="page">
+  <header>
+    <div class="badge" aria-hidden="true">K</div>
+    <div>
+      <h1>KVP Store</h1>
+      <p class="tagline">A small key&#8211;value store with built-in TTL expiry.</p>
     </div>
-  </section>
+  </header>
 
-  <section class="panel">
-    <label for="result">Result</label>
-    <pre id="result" class="meta">Ready.</pre>
-  </section>
+  <div class="workspace">
+    <section class="card">
+      <h2>Request</h2>
+      <label for="key">Key</label>
+      <input id="key" name="key" autocomplete="off" placeholder="e.g. config/env" value="config">
+      <label for="apikey">API key (required if the server sets KVP_API_KEY)</label>
+      <input id="apikey" name="apikey" type="password" autocomplete="off" placeholder="X-API-Key value">
+      <label for="value">Value (POST only)</label>
+      <textarea id="value" name="value" placeholder="value to store"></textarea>
+      <div class="field-hint"><span></span><span class="count" id="counter">0 B</span></div>
+      <div class="actions">
+        <button type="button" class="primary" id="put">PUT /key</button>
+        <button type="button" id="get">GET /key</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="result-head">
+        <h2>Result</h2>
+        <span class="status" id="status"></span>
+        <button type="button" class="mini" id="copy">Copy</button>
+      </div>
+      <pre id="result" class="meta">Ready.</pre>
+    </section>
+  </div>
+
+  <footer>
+    Endpoints: <code>GET /&lt;key&gt;</code> reads a value &nbsp;&middot;&nbsp; <code>POST /&lt;key&gt;</code> stores it with the server TTL.
+  </footer>
 </main>
 <script src="/app.js"></script>
 </body>
