@@ -325,9 +325,9 @@ All config via environment variables, parsed/validated in `internal/config` (fai
 | `KVP_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `KVP_OTEL_SERVICE_NAME` | `kvp` | OTel service name |
 | `KVP_OTEL_EXPORTER_OTLP_ENDPOINT` | *(empty)* | OTLP endpoint (compose sets it to the collector); empty = stdout/no-op dev mode |
-| `GRAFANA_CLOUD_STACK_ID` | *(empty)* | GrafanaCloud stack instance ID (Basic-auth user) |
+| `GRAFANA_CLOUD_STACK_ID` | *(empty)* | GrafanaCloud stack **instance ID** (Basic-auth user). The numeric ID shown on the stack's OpenTelemetry connect page — **not** the org ID |
 | `GRAFANA_CLOUD_API_TOKEN` | *(empty)* | Scoped GrafanaCloud token (`metrics:write`, `traces:write`, `logs:write`); Basic-auth password |
-| `GRAFANA_CLOUD_REGION` | `prod-us-central-0` | GrafanaCloud region; collector builds `otlp-gateway-<region>.grafana.net:443` |
+| `GRAFANA_CLOUD_REGION` | *(empty)* | Region slug from the OpenTelemetry connect page (e.g. `prod-us-east-2`); collector builds `https://otlp-gateway-<region>.grafana.net/otlp` |
 | `KVP_BACKUP_DIR` | *(empty, disabled)* | Directory for `VACUUM INTO` backups |
 | `KVP_BACKUP_INTERVAL` | `24h` | Backup cadence |
 | `KVP_BACKUP_RETENTION` | `7` | Backup files to keep |
@@ -350,6 +350,8 @@ All config via environment variables, parsed/validated in `internal/config` (fai
 | `kvp` (minimal) | `deploy/docker-compose.example.yml` is a single-service quickstart: same image/volume/healthcheck, just `KVP_API_KEY`, `KVP_DB_PATH`, `KVP_TTL`, `KVP_MAX_DB_BYTES`. |
 | `cloudflared` | public entrypoint; `depends_on: kvp (service_healthy)`; token from `.env`, **not** committed (v1 bug #9). |
 | `otel-collector` | always part of the stack; receives OTLP from `kvp`, exports OTLP → GrafanaCloud gateway (Basic auth from `.env`); if GrafanaCloud vars are unset, falls back to file/stdout for local dev. |
+
+To source the GrafanaCloud values: on the stack's **OpenTelemetry connect page** (Connections → OpenTelemetry), read the OTLP endpoint (region) and the numeric **Instance ID**; the API token is an access-policy token created in My Account → Access Policies with `metrics:write`/`traces:write`/`logs:write`. The instance ID is **not** the org ID (a decoded `glc_` token carries `o=<org>`), so copy it from the page. Basic auth is applied via the collector's `basicauth` extension (raw `Basic <id>:<token>` headers do not work).
 
 Default `docker compose up -d` runs app + tunnel + collector. There is **no self-hosted Prometheus or Grafana** in production — dashboards and alerts live in GrafanaCloud. An optional `local-dev` profile (standalone Prometheus scraping `/metrics`) is available purely for laptop debugging.
 
