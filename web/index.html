@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KVP Store</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a21; --border: #2a2f3a;
+    --text: #e6e9ef; --muted: #9aa3b2; --accent: #4f8cff;
+    --ok: #3fb950; --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; font: 15px/1.5 system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.tag { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 6px; }
+  input, textarea {
+    width: 100%; background: #0d0f14; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+    font: inherit; margin-bottom: 12px;
+  }
+  textarea { resize: vertical; min-height: 80px; font-family: ui-monospace, Consolas, monospace; }
+  .row { display: flex; gap: 8px; }
+  button {
+    flex: 1; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: #21262e; color: var(--text); font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button[type="submit"] { background: #1f6feb; border-color: #1f6feb; }
+  button[type="submit"]:hover { background: #388bfd; }
+  #result {
+    white-space: pre-wrap; word-break: break-all;
+    font-family: ui-monospace, Consolas, monospace; font-size: 13px;
+  }
+  #result.ok { color: var(--ok); }
+  #result.err { color: var(--err); }
+  #result.meta { color: var(--muted); }
+  #value { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>KVP Store</h1>
+  <p class="tag">Key-value store with TTL. GET /&lt;key&gt; to read, POST /&lt;key&gt; to write.</p>
+
+  <section class="panel">
+    <label for="key">Key</label>
+    <input id="key" name="key" autocomplete="off" placeholder="e.g. config/env" value="config">
+    <label for="value">Value (POST only)</label>
+    <textarea id="value" name="value" placeholder="value to store"></textarea>
+    <div class="row">
+      <button type="submit" id="put">PUT /key</button>
+      <button type="button" id="get">GET /key</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <label for="result">Result</label>
+    <pre id="result" class="meta">Ready.</pre>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

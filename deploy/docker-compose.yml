@@ -1,0 +1,80 @@
+services:
+  kvp:
+    image: ghcr.io/dmoruzzi/decikvp:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - kvp_data:/app
+    environment:
+      KVP_PORT: ":8080"
+      KVP_METRICS_PORT: "127.0.0.1:9090"
+      KVP_DB_PATH: /app/kvp.db
+      KVP_MAX_DB_BYTES: ${KVP_MAX_DB_BYTES:-1073741824}
+      KVP_CLEANUP_BATCH_SIZE: ${KVP_CLEANUP_BATCH_SIZE:-1000}
+      KVP_CLEANUP_MAX_RUNS: ${KVP_CLEANUP_MAX_RUNS:-20}
+      KVP_SIZE_CLEANUP_THROTTLE: ${KVP_SIZE_CLEANUP_THROTTLE:-1m}
+      KVP_CLEANUP_INTERVAL: ${KVP_CLEANUP_INTERVAL:-1m}
+      KVP_MAX_BODY_BYTES: ${KVP_MAX_BODY_BYTES:-1048576}
+      KVP_MAX_KEY_BYTES: ${KVP_MAX_KEY_BYTES:-256}
+      KVP_TTL: ${KVP_TTL:-24h}
+      KVP_RATE_LIMIT_RPS: ${KVP_RATE_LIMIT_RPS:-10}
+      KVP_RATE_LIMIT_BURST: ${KVP_RATE_LIMIT_BURST:-20}
+      KVP_API_KEY: ${KVP_API_KEY:-}
+      KVP_TRUSTED_PROXIES: ${KVP_TRUSTED_PROXIES:-}
+      KVP_LOG_LEVEL: ${KVP_LOG_LEVEL:-info}
+      KVP_OTEL_SERVICE_NAME: ${KVP_OTEL_SERVICE_NAME:-kvp}
+      KVP_OTEL_EXPORTER_OTLP_ENDPOINT: ${KVP_OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      KVP_BACKUP_DIR: ${KVP_BACKUP_DIR:-}
+      KVP_BACKUP_INTERVAL: ${KVP_BACKUP_INTERVAL:-6h}
+      KVP_BACKUP_RETENTION: ${KVP_BACKUP_RETENTION:-5}
+      KVP_SHUTDOWN_TIMEOUT: ${KVP_SHUTDOWN_TIMEOUT:-15s}
+      # Set by the observability profile for GrafanaCloud exports:
+      GRAFANA_CLOUD_STACK_ID: ${GRAFANA_CLOUD_STACK_ID:-}
+      GRAFANA_CLOUD_API_TOKEN: ${GRAFANA_CLOUD_API_TOKEN:-}
+      GRAFANA_CLOUD_REGION: ${GRAFANA_CLOUD_REGION:-}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/readyz"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      kvp:
+        condition: service_healthy
+    command: tunnel run --token ${TUNNEL_TOKEN:?TUNNEL_TOKEN is required in .env}
+    environment:
+      NO_AUTOUPDATE: "true"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.135.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["--config", "/etc/otel-collector.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otel-collector.yaml:ro
+    environment:
+      GRAFANA_CLOUD_STACK_ID: ${GRAFANA_CLOUD_STACK_ID:-}
+      GRAFANA_CLOUD_API_TOKEN: ${GRAFANA_CLOUD_API_TOKEN:-}
+      GRAFANA_CLOUD_REGION: ${GRAFANA_CLOUD_REGION:-}
+    depends_on:
+      kvp:
+        condition: service_healthy
+
+  # Laptop-only debugging: standalone Prometheus scraping /metrics (127.0.0.1:9090).
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["local-dev"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+volumes:
+  kvp_data:

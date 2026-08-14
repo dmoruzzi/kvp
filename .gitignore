@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Build artifacts
+/kvp
+*.exe
+*.test
+*.out
+
+# Data & backups
+*.db
+*.db-wal
+*.db-shm
+backups/
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/.terraform.lock.hcl
+terraform/crash.log
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

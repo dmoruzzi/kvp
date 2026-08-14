@@ -1,0 +1,36 @@
+# Minimal OTLP receiver -> GrafanaCloud exporter.
+# If GrafanaCloud vars are unset, falls back to file/stdout for local dev.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+exporters:
+  otlphttp/grafana:
+    endpoint: "https://${env:GRAFANA_CLOUD_REGION}.grafana.net/otlp"
+    headers:
+      Authorization: "Basic ${env:GRAFANA_CLOUD_STACK_ID}:${env:GRAFANA_CLOUD_API_TOKEN}"
+  file/metrics:
+    path: /tmp/otel/metrics.jsonl
+  logging:
+    verbosity: basic
+
+processors:
+  batch: {}
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters:
+        - otlphttp/grafana
+        - logging
+        - file/metrics
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters:
+        - otlphttp/grafana
+        - logging
