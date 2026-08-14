@@ -98,7 +98,7 @@ jobs:
   grafana:
     runs-on: ubuntu-latest
     needs: build
-    if: github.event_name == 'push' && secrets.GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN != '' && secrets.GRAFANA_CLOUD_STACK_SLUG != ''
+    if: github.event_name == 'push'
     timeout-minutes: 15
     environment: grafana
     defaults:
@@ -109,12 +109,26 @@ jobs:
       - uses: hashicorp/setup-terraform@v4.0.1
         with:
           terraform_version: "1.9"
+      - name: guard
+        id: guard
+        run: |
+          if [ -z "${TOKEN}" ] || [ -z "${SLUG}" ]; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            echo "Skipping Grafana provisioning: GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN / GRAFANA_CLOUD_STACK_SLUG not both set."
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          TOKEN: ${{ secrets.GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN }}
+          SLUG: ${{ secrets.GRAFANA_CLOUD_STACK_SLUG }}
       - name: init
+        if: steps.guard.outputs.skip != '1'
         run: terraform init
         env:
           GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN: ${{ secrets.GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN }}
           TF_VAR_stack_slug: ${{ secrets.GRAFANA_CLOUD_STACK_SLUG }}
       - name: apply
+        if: steps.guard.outputs.skip != '1'
         run: terraform apply -auto-approve
         env:
           GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN: ${{ secrets.GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN }}
