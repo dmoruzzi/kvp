@@ -25,16 +25,14 @@ services:
       KVP_TRUSTED_PROXIES: ${KVP_TRUSTED_PROXIES:-}
       KVP_LOG_LEVEL: ${KVP_LOG_LEVEL:-info}
       KVP_OTEL_SERVICE_NAME: ${KVP_OTEL_SERVICE_NAME:-kvp}
-      # Empty by default: OTLP export is disabled unless the observability
-      # profile is used (then set KVP_OTEL_EXPORTER_OTLP_ENDPOINT in .env,
-      # e.g. otel-collector:4317). A bare otel-collector host only resolves
-      # when that profile's collector is running.
-      KVP_OTEL_EXPORTER_OTLP_ENDPOINT: ${KVP_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      # The collector below is always part of the stack, so OTLP export is on
+      # by default. GrafanaCloud exports are gated by GRAFANA_CLOUD_STACK_ID /
+      # GRAFANA_CLOUD_API_TOKEN (empty => collector falls back to file/stdout).
+      KVP_OTEL_EXPORTER_OTLP_ENDPOINT: ${KVP_OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       KVP_BACKUP_DIR: ${KVP_BACKUP_DIR:-}
       KVP_BACKUP_INTERVAL: ${KVP_BACKUP_INTERVAL:-6h}
       KVP_BACKUP_RETENTION: ${KVP_BACKUP_RETENTION:-5}
       KVP_SHUTDOWN_TIMEOUT: ${KVP_SHUTDOWN_TIMEOUT:-15s}
-      # Set by the observability profile for GrafanaCloud exports:
       GRAFANA_CLOUD_STACK_ID: ${GRAFANA_CLOUD_STACK_ID:-}
       GRAFANA_CLOUD_API_TOKEN: ${GRAFANA_CLOUD_API_TOKEN:-}
       GRAFANA_CLOUD_REGION: ${GRAFANA_CLOUD_REGION:-}
@@ -57,7 +55,6 @@ services:
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.135.0
-    profiles: ["observability"]
     restart: unless-stopped
     command: ["--config", "/etc/otel-collector.yaml"]
     volumes:
