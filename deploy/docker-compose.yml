@@ -57,6 +57,8 @@ services:
     image: otel/opentelemetry-collector-contrib:0.135.0
     restart: unless-stopped
     command: ["--config", "/etc/otel-collector.yaml"]
+    tmpfs:
+      - /tmp
     volumes:
       - ./otel-collector.yaml:/etc/otel-collector.yaml:ro
     environment:

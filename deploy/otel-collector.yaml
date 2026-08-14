@@ -12,8 +12,8 @@ exporters:
     headers:
       Authorization: "Basic ${env:GRAFANA_CLOUD_STACK_ID}:${env:GRAFANA_CLOUD_API_TOKEN}"
   file/metrics:
-    path: /tmp/otel/metrics.jsonl
-  logging:
+    path: /tmp/metrics.jsonl
+  debug:
     verbosity: basic
 
 processors:
@@ -26,11 +26,11 @@ service:
       processors: [batch]
       exporters:
         - otlphttp/grafana
-        - logging
+        - debug
         - file/metrics
     traces:
       receivers: [otlp]
       processors: [batch]
       exporters:
         - otlphttp/grafana
-        - logging
+        - debug
