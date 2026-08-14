@@ -336,10 +336,11 @@ All config via environment variables, parsed/validated in `internal/config` (fai
 
 ### 12.1 Dockerfile (`deploy/Dockerfile`)
 
-- Builder: `golang:1.26-alpine`, `CGO_ENABLED=0`, pure-Go `modernc.org/sqlite` → static binary.
-- Runtime: `alpine:3.23`, non-root user (`USER 65532:65532`), copies binary + `web/index.html`, exposes 8080, `ENTRYPOINT` with `STOPSIGNAL SIGTERM`.
-- `HEALTHCHECK` hitting `http://127.0.0.1:9090/readyz` (liveness on the admin port, loopback-only).
-- The DB volume is mounted with the app running as non-root (volume ownership handled via a compose init step or named-volume copy).
+- Builder: `dhi.io/golang:1.26-dev` (Docker Hardened Image), `CGO_ENABLED=0`, pure-Go `modernc.org/sqlite` → static binary, plus a tiny `hc` healthcheck binary (the runtime has no shell/wget).
+- Runtime: `dhi.io/static:20260611-alpine` (Docker Hardened Image; alpine 3.24, non-root `65532`, TLS certs included, no package manager, no shell). Copies `kvp` + `hc`, `WORKDIR /app` owned by `65532` (named-volume copy-up stays writable), embeds `time/tzdata`, exposes 8080, `ENTRYPOINT` with `STOPSIGNAL SIGTERM`, exec-form `HEALTHCHECK` → `/usr/local/bin/hc`.
+- `HEALTHCHECK` (`hc` binary) hitting `http://127.0.0.1:9090/readyz` (liveness on the admin port, loopback-only).
+- Building requires `docker login dhi.io` (Docker Hub account). In CI this is a `docker/login-action` for `registry: dhi.io` with the `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets.
+- The DB volume is mounted at `/app`, initialized owned by `65532` via `COPY --chown`, so the non-root app can write `/app/kvp.db`.
 
 ### 12.2 docker-compose.yml (`deploy/docker-compose.yml`)
 

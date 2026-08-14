@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "time/tzdata"
+
 	"github.com/dmoruzzi/kvp/internal/cleanup"
 	"github.com/dmoruzzi/kvp/internal/config"
 	"github.com/dmoruzzi/kvp/internal/server"

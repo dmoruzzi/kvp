@@ -1,0 +1,8 @@
+.git
+.gitignore
+.env
+.github
+terraform
+dist
+spec.md
+*.md
