@@ -1,0 +1,26 @@
+# Minimal example: run just the kvp server for local testing.
+# The full production compose (cloudflared, otel-collector, profiles) is
+# deploy/docker-compose.yml. Run: docker compose -f docker-compose.example.yml up -d
+services:
+  kvp:
+    image: ghcr.io/dmoruzzi/kvp:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - kvp_data:/app
+    environment:
+      KVP_API_KEY: change-me            # set a real key; empty = open access
+      KVP_DB_PATH: /app/kvp.db
+      KVP_TTL: 24h
+      KVP_MAX_DB_BYTES: 1073741824
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/hc"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  kvp_data:
