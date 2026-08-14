@@ -25,7 +25,11 @@ services:
       KVP_TRUSTED_PROXIES: ${KVP_TRUSTED_PROXIES:-}
       KVP_LOG_LEVEL: ${KVP_LOG_LEVEL:-info}
       KVP_OTEL_SERVICE_NAME: ${KVP_OTEL_SERVICE_NAME:-kvp}
-      KVP_OTEL_EXPORTER_OTLP_ENDPOINT: ${KVP_OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      # Empty by default: OTLP export is disabled unless the observability
+      # profile is used (then set KVP_OTEL_EXPORTER_OTLP_ENDPOINT in .env,
+      # e.g. otel-collector:4317). A bare otel-collector host only resolves
+      # when that profile's collector is running.
+      KVP_OTEL_EXPORTER_OTLP_ENDPOINT: ${KVP_OTEL_EXPORTER_OTLP_ENDPOINT:-}
       KVP_BACKUP_DIR: ${KVP_BACKUP_DIR:-}
       KVP_BACKUP_INTERVAL: ${KVP_BACKUP_INTERVAL:-6h}
       KVP_BACKUP_RETENTION: ${KVP_BACKUP_RETENTION:-5}

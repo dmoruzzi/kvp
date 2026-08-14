@@ -349,7 +349,7 @@ All config via environment variables, parsed/validated in `internal/config` (fai
 | `kvp` | image `ghcr.io/dmoruzzi/kvp:latest`; host port `127.0.0.1:8080:8080`; volume `kvp_data:/app`; `healthcheck` against `/readyz`; `restart: unless-stopped`; env from `.env` (no inline secrets). |
 | `kvp` (minimal) | `deploy/docker-compose.example.yml` is a single-service quickstart: same image/volume/healthcheck, just `KVP_API_KEY`, `KVP_DB_PATH`, `KVP_TTL`, `KVP_MAX_DB_BYTES`. |
 | `cloudflared` | public entrypoint; `depends_on: kvp (service_healthy)`; token from `.env`, **not** committed (v1 bug #9). |
-| `otel-collector` | `profiles: ["observability"]`; receives OTLP from `kvp`, exports OTLP → GrafanaCloud gateway (Basic auth from `.env`); if GrafanaCloud vars are unset, falls back to file/stdout for local dev. |
+| `otel-collector` | `profiles: ["observability"]`; receives OTLP from `kvp`, exports OTLP → GrafanaCloud gateway (Basic auth from `.env`); if GrafanaCloud vars are unset, falls back to file/stdout for local dev. `KVP_OTEL_EXPORTER_OTLP_ENDPOINT` is empty by default (OTLP off) — set it in `.env` (e.g. `otel-collector:4317`) when using this profile. |
 
 Default `docker compose up -d` runs app + tunnel (same as v1). The `observability` profile adds only the collector. There is **no self-hosted Prometheus or Grafana** in production — dashboards and alerts live in GrafanaCloud. An optional `local-dev` profile (standalone Prometheus scraping `/metrics`) is available purely for laptop debugging.
 
