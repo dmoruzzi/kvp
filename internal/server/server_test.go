@@ -259,6 +259,22 @@ func TestAuthRequired(t *testing.T) {
 	}
 }
 
+func TestUIPublicWhenAuthConfigured(t *testing.T) {
+	h, _ := newTestServer(t, Options{APIKey: "secret"})
+	for _, path := range []string{"/", "/index.html", "/app.js"} {
+		rr := doReq(t, h, "GET", path, "", nil)
+		if rr.Code != http.StatusOK {
+			t.Errorf("GET %s without key = %d, want 200", path, rr.Code)
+		}
+	}
+	if rr := doReq(t, h, "POST", "/", "x", nil); rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST / without key = %d, want 405 (UI route, not auth)", rr.Code)
+	}
+	if rr := doReq(t, h, "GET", "/datakey", "", nil); rr.Code != http.StatusUnauthorized {
+		t.Errorf("GET /datakey without key = %d, want 401 (data still protected)", rr.Code)
+	}
+}
+
 func TestAuthDisabledOpen(t *testing.T) {
 	h, _ := newTestServer(t, Options{})
 	if rr := doReq(t, h, "GET", "/open", "", nil); rr.Code != http.StatusNotFound {

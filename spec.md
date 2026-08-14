@@ -142,7 +142,7 @@ All error responses are JSON `{"error": "<message>"}` with `Content-Type: applic
 
 ## 6. Authentication
 
-- If `KVP_API_KEY` is set: every request on the **public** listener must carry `X-API-Key` matching exactly, else `401`.
+- If `KVP_API_KEY` is set: every request on the **public** listener must carry `X-API-Key` matching exactly, else `401`. The static UI assets (`GET /`, `GET /index.html`, `GET /app.js`) are **exempt** so the index loads in a browser without a key; the UI authenticates its data operations by sending `X-API-Key` (entered by the user, remembered in `sessionStorage`) on its PUT/GET requests, which stay fully protected.
 - Comparison uses `crypto/subtle.ConstantTimeCompare` (v1 used `!=` — timing side channel).
 - `WWW-Authenticate` header is **removed** (v1 emitted `Basic`, which is misleading for a header scheme).
 - If `KVP_API_KEY` is empty: open access (documented default).

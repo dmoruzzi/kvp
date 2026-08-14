@@ -2,8 +2,20 @@
   "use strict";
 
   var keyEl = document.getElementById("key");
+  var apiKeyEl = document.getElementById("apikey");
   var valueEl = document.getElementById("value");
   var resultEl = document.getElementById("result");
+
+  var SESSION_KEY = "kvp.apiKey";
+
+  apiKeyEl.value = sessionStorage.getItem(SESSION_KEY) || "";
+  apiKeyEl.addEventListener("input", function () {
+    if (apiKeyEl.value) {
+      sessionStorage.setItem(SESSION_KEY, apiKeyEl.value);
+    } else {
+      sessionStorage.removeItem(SESSION_KEY);
+    }
+  });
 
   function keyPath() {
     var k = (keyEl.value || "").trim();
@@ -25,6 +37,9 @@
   function req(method, path, body, onDone) {
     var xhr = new XMLHttpRequest();
     xhr.open(method, path, true);
+    if (apiKeyEl.value) {
+      xhr.setRequestHeader("X-API-Key", apiKeyEl.value);
+    }
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== 4) {
         return;
@@ -38,6 +53,22 @@
     return status === 200 || status === 201 ? "OK (" + status + ")" : "HTTP " + status;
   }
 
+  function errorMessage(status, text) {
+    var msg = text;
+    try {
+      var parsed = JSON.parse(text);
+      if (parsed && parsed.error) {
+        msg = parsed.error;
+      }
+    } catch (e) {
+      msg = text;
+    }
+    if (status === 401) {
+      msg = "unauthorized — enter the server API key (KVP_API_KEY) above";
+    }
+    return renderStatus(status) + ": " + msg;
+  }
+
   document.getElementById("put").addEventListener("click", function () {
     var path = keyPath();
     if (!path) {
@@ -48,16 +79,7 @@
       if (status === 200 || status === 201) {
         show("stored " + path + " (" + body.length + " bytes)", false);
       } else {
-        var msg = "stored";
-        try {
-          var parsed = JSON.parse(text);
-          if (parsed && parsed.message) {
-            msg = parsed.message;
-          }
-        } catch (e) {
-          msg = text;
-        }
-        show(renderStatus(status) + ": " + msg, true);
+        show(errorMessage(status, text), true);
       }
     });
   });
@@ -71,16 +93,7 @@
       if (status === 200) {
         show(text, false);
       } else {
-        var msg = text;
-        try {
-          var parsed = JSON.parse(text);
-          if (parsed && parsed.message) {
-            msg = parsed.message;
-          }
-        } catch (e) {
-          msg = text;
-        }
-        show(renderStatus(status) + ": " + msg, true);
+        show(errorMessage(status, text), true);
       }
     });
   });

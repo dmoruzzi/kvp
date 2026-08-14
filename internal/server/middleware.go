@@ -122,10 +122,12 @@ func (s *Server) rateLimit(next http.Handler) http.Handler {
 }
 
 // auth enforces the static API key with a constant-time comparison when
-// configured (§6). WWW-Authenticate is deliberately not emitted.
+// configured (§6). WWW-Authenticate is deliberately not emitted. The static
+// UI paths are exempt so the index loads in a browser without a key; the UI
+// authenticates its data operations with the key entered by the user.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.opts.APIKey != "" {
+		if s.opts.APIKey != "" && !isUIPath(r.URL.Path) {
 			got := r.Header.Get("X-API-Key")
 			if !constantTimeEqual(got, s.opts.APIKey) {
 				s.writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -134,6 +136,15 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isUIPath reports whether path is a static UI asset served without auth.
+func isUIPath(path string) bool {
+	switch path {
+	case "/", "/index.html", "/app.js":
+		return true
+	}
+	return false
 }
 
 func constantTimeEqual(a, b string) bool {
