@@ -51,7 +51,7 @@ jobs:
       - name: scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.tags }}
+          image-ref: ghcr.io/${{ github.repository }}:${{ github.sha }}
           severity: CRITICAL
           exit-code: "1"
           ignore-unfixed: true
