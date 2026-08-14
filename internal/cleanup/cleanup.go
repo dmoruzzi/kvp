@@ -68,7 +68,7 @@ func (r *ExpiryRunner) RunOnce(ctx context.Context) (int64, error) {
 
 // Run loops the sweep until the context is cancelled, running once immediately.
 func (r *ExpiryRunner) Run(ctx context.Context) {
-	r.RunOnce(ctx)
+	_, _ = r.RunOnce(ctx)
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
@@ -76,7 +76,7 @@ func (r *ExpiryRunner) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.RunOnce(ctx)
+			_, _ = r.RunOnce(ctx)
 		}
 	}
 }
@@ -182,7 +182,7 @@ func (e *Evictor) RunLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			e.MaybeEvict(ctx)
+			_, _ = e.MaybeEvict(ctx)
 		}
 	}
 }
@@ -239,7 +239,7 @@ func (b *Backuper) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			b.RunOnce(ctx)
+			_ = b.RunOnce(ctx)
 		}
 	}
 }

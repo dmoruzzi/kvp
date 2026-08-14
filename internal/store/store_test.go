@@ -14,7 +14,7 @@ func newTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -430,7 +430,7 @@ func TestBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening backup: %v", err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 	got, err := b.Get(ctx, "a")
 	if err != nil {
 		t.Fatal(err)

@@ -29,7 +29,7 @@ func newTestServer(t *testing.T, o Options) (http.Handler, *store.Store) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 	if o.UI == nil {
 		o.UI = testIndexFS
 	}
@@ -211,7 +211,7 @@ func TestEmptyKeyBadRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	s := newServer(st, Options{Logger: slog.New(slog.NewTextHandler(discard{}, nil))})
 	req := httptest.NewRequest("GET", "/", nil)
 	rr := httptest.NewRecorder()

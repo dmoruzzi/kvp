@@ -146,7 +146,7 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request, name string) {
 		s.internalError(w, r, "open ui", err)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	w.Header().Set("Content-Type", ctype)
 	if _, err := io.Copy(w, f); err != nil {
 		s.internalError(w, r, "serve ui", err)
@@ -172,7 +172,7 @@ func (s *Server) serveGet(w http.ResponseWriter, r *http.Request, key string) {
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
-	w.Write(res.Value)
+	_, _ = w.Write(res.Value)
 }
 
 func (s *Server) servePost(w http.ResponseWriter, r *http.Request, key string) {
@@ -203,7 +203,7 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request, key string) {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte("stored"))
+	_, _ = w.Write([]byte("stored"))
 }
 
 func (s *Server) internalError(w http.ResponseWriter, r *http.Request, op string, err error) {
@@ -237,7 +237,7 @@ func (s *Server) writeError(w http.ResponseWriter, status int, msg string) {
 	b, _ := json.Marshal(map[string]string{"error": msg})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	w.Write(b)
+	_, _ = w.Write(b)
 }
 
 type ctxKey int

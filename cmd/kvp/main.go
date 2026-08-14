@@ -54,10 +54,10 @@ func run() error {
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
-		tel.Shutdown(context.Background())
+		_ = tel.Shutdown(context.Background())
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	health := telemetry.NewHealth(func(ctx context.Context) error { return st.Ping(ctx) })
 	tel.Metrics.SetDBLimit(cfg.MaxDBBytes)
@@ -77,7 +77,7 @@ func run() error {
 		UI:             web.FS,
 		Logger:         logger,
 		Metrics:        tel.Metrics,
-		AfterWrite:     func() { evictor.MaybeEvict(context.Background()) },
+		AfterWrite:     func() { _, _ = evictor.MaybeEvict(context.Background()) },
 		Wrap: func(h http.Handler) http.Handler {
 			return otelhttp.NewHandler(h, "kvp.http")
 		},
@@ -134,8 +134,12 @@ func run() error {
 	health.SetDraining(true)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
-	publicSrv.Shutdown(shutdownCtx)
-	adminSrv.Shutdown(shutdownCtx)
+	if err := publicSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("public server shutdown", "error", err)
+	}
+	if err := adminSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("admin server shutdown", "error", err)
+	}
 	stopJobs()
 
 	if err := tel.Shutdown(shutdownCtx); err != nil {

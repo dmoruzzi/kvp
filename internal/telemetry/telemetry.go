@@ -85,7 +85,7 @@ func New(cfg Config) (*Telemetry, error) {
 
 	tp, err := newTraceProvider(cfg.OTLPEndpoint, res)
 	if err != nil {
-		tel.Shutdown(context.Background())
+		_ = tel.Shutdown(context.Background())
 		return nil, err
 	}
 	tel.TracerProvider = tp
@@ -94,7 +94,7 @@ func New(cfg Config) (*Telemetry, error) {
 
 	tel.Metrics, err = newMetrics(mp.Meter(cfg.ServiceName))
 	if err != nil {
-		tel.Shutdown(context.Background())
+		_ = tel.Shutdown(context.Background())
 		return nil, err
 	}
 	return tel, nil
@@ -400,5 +400,5 @@ func (h *Health) ReadinessHandler() http.Handler {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

@@ -364,9 +364,10 @@ Default `docker compose up -d` runs app + tunnel (same as v1). The `observabilit
 - Observability provisioning: `terraform fmt` + `terraform validate` on `terraform/` (no apply on PRs).
 
 ### 13.2 Build & push (`.github/workflows/docker.yml`)
-- Trigger: push to `main` (and PRs → build-only).
-- Buildx multi-arch (`linux/amd64`, `linux/arm64`), tags: branch ref, short SHA, `latest` on default branch.
+- Trigger: push to `main` and tags `v*` (and PRs → build-only).
+- Buildx **`linux/amd64` only** (deliberate: no arm64 image), tags: branch ref, tag ref, short SHA, `latest` on default branch.
 - Push to `ghcr.io/<repo>` with `GITHUB_TOKEN`; scan image (e.g. `trivy`) and fail on critical findings.
+- On tag pushes, a `release` job cross-compiles the server for `linux/amd64` and `windows/amd64` (plus `SHA256SUMS.txt`) and attaches them to the GitHub release.
 
 ### 13.3 GrafanaCloud provisioning
 - On push to `main`: `terraform apply` for dashboards/alert rules, authenticated with a `GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN` stored as a CI secret (separate from the runtime write-only token in §11).

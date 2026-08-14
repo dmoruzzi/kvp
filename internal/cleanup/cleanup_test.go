@@ -18,8 +18,15 @@ func newStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 	return st
+}
+
+func mustPut(t *testing.T, st *store.Store, key string, ttl time.Duration) {
+	t.Helper()
+	if err := st.Put(context.Background(), key, []byte("v"), ttl); err != nil {
+		t.Fatalf("store.Put(%s): %v", key, err)
+	}
 }
 
 func discardLogger() *slog.Logger {
@@ -92,10 +99,10 @@ func TestExpiryRunOnce(t *testing.T) {
 	st.SetClock(func() time.Time { return now })
 
 	// Two rows expire at now+1h; one is refreshed to now+3h.
-	st.Put(ctx, "a", []byte("v"), time.Hour)
-	st.Put(ctx, "b", []byte("v"), time.Hour)
+	mustPut(t, st, "a", time.Hour)
+	mustPut(t, st, "b", time.Hour)
 	st.SetClock(func() time.Time { return now.Add(30 * time.Minute) })
-	st.Put(ctx, "c", []byte("v"), 3*time.Hour)
+	mustPut(t, st, "c", 3*time.Hour)
 
 	st.SetClock(func() time.Time { return now.Add(2 * time.Hour) })
 	rec := newRecording()
@@ -122,7 +129,7 @@ func TestExpiryRunOnce(t *testing.T) {
 
 func TestExpiryRunOnceErrorRecorded(t *testing.T) {
 	st := newStore(t)
-	st.Close()
+	_ = st.Close()
 	rec := newRecording()
 	r := NewExpiryRunner(st, time.Hour, discardLogger(), rec)
 	if _, err := r.RunOnce(context.Background()); err == nil {
@@ -224,7 +231,7 @@ func TestEvictorSingleflightGuard(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e.MaybeEvict(context.Background())
+			_, _ = e.MaybeEvict(context.Background())
 		}()
 	}
 	wg.Wait()
@@ -240,7 +247,7 @@ func TestBackupRunOnce(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	st.SetClock(func() time.Time { return now })
-	st.Put(context.Background(), "a", []byte("b"), time.Hour)
+	mustPut(t, st, "a", time.Hour)
 
 	rec := newRecording()
 	b := NewBackuper(st, dir, 24*time.Hour, 3, discardLogger(), rec)

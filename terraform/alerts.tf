@@ -47,6 +47,10 @@ resource "grafana_rule_group" "kvp" {
     data {
       ref_id         = "C"
       datasource_uid = "__expr__"
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
       model = jsonencode({
         type       = "math"
         expression = "($${A} / $${B}) > 0.05"
@@ -98,6 +102,10 @@ resource "grafana_rule_group" "kvp" {
     data {
       ref_id         = "C"
       datasource_uid = "__expr__"
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
       model = jsonencode({
         type       = "math"
         expression = "($${A} / $${B}) > 0.9"

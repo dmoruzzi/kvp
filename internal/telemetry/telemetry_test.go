@@ -15,7 +15,7 @@ func TestMetricsGoldenNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer tel.Shutdown(context.Background())
+	defer func() { _ = tel.Shutdown(context.Background()) }()
 
 	// Record at least one sample per instrument (§14 golden metrics test).
 	m := tel.Metrics
@@ -76,7 +76,7 @@ func TestLoggerLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer tel.Shutdown(context.Background())
+	defer func() { _ = tel.Shutdown(context.Background()) }()
 	if tel.Logger.Enabled(context.Background(), slog.LevelInfo) {
 		t.Error("logger at level error should not be enabled for info")
 	}

@@ -53,7 +53,7 @@ func Open(path string) (*Store, error) {
 
 	s := &Store{db: db, now: time.Now}
 	if err := s.migrate(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return s, nil

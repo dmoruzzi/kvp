@@ -73,14 +73,13 @@ func Parse(getenv func(string) string) (Config, error) {
 	}
 
 	var err error
-	assign := func(name string, set func(string) error) error {
+	assign := func(name string, set func(string) error) {
 		if err != nil {
-			return err
+			return
 		}
 		if setErr := set(getenv(name)); setErr != nil {
 			err = fmt.Errorf("%s: %w", name, setErr)
 		}
-		return err
 	}
 
 	assign("KVP_PORT", func(v string) error {
