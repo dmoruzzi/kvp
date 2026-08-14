@@ -1,6 +1,6 @@
 services:
   kvp:
-    image: ghcr.io/dmoruzzi/decikvp:latest
+    image: ghcr.io/dmoruzzi/kvp:latest
     restart: unless-stopped
     init: true
     ports:

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmoruzzi/decikvp/internal/store"
+	"github.com/dmoruzzi/kvp/internal/store"
 )
 
 func newStore(t *testing.T) *store.Store {

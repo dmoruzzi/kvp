@@ -1,4 +1,4 @@
-module github.com/dmoruzzi/decikvp
+module github.com/dmoruzzi/kvp
 
 go 1.25.0
 

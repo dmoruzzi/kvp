@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dmoruzzi/decikvp/internal/store"
+	"github.com/dmoruzzi/kvp/internal/store"
 )
 
 // Options configures the server. Zero values fall back to spec defaults.

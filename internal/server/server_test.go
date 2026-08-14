@@ -13,7 +13,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/dmoruzzi/decikvp/internal/store"
+	"github.com/dmoruzzi/kvp/internal/store"
 )
 
 const testIndex = `<!doctype html><html><head><title>kvp</title></head><body>kvp ui</body></html>`

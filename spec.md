@@ -1,4 +1,4 @@
-# KVP Store (decikvp) — Production Specification v2
+# KVP Store — Production Specification v2
 
 An HTTP key/value store with SQLite persistence, TTL expiry, and a web UI. Zero-auth by default, optional static API key. This revision redesigns the v1 spec for production: it restructures the codebase into packages, fixes all known v1 bugs (see §15), and adds first-class observability (structured logs, OpenTelemetry metrics/traces/logs, health checks, and GrafanaCloud-hosted dashboards and alerting).
 
@@ -345,7 +345,7 @@ All config via environment variables, parsed/validated in `internal/config` (fai
 
 | Service | Notes |
 |---|---|
-| `kvp` | image `ghcr.io/dmoruzzi/decikvp:latest`; host port `127.0.0.1:8080:8080`; volume `kvp_data:/app`; `healthcheck` against `/readyz`; `restart: unless-stopped`; env from `.env` (no inline secrets). |
+| `kvp` | image `ghcr.io/dmoruzzi/kvp:latest`; host port `127.0.0.1:8080:8080`; volume `kvp_data:/app`; `healthcheck` against `/readyz`; `restart: unless-stopped`; env from `.env` (no inline secrets). |
 | `cloudflared` | public entrypoint; `depends_on: kvp (service_healthy)`; token from `.env`, **not** committed (v1 bug #9). |
 | `otel-collector` | `profiles: ["observability"]`; receives OTLP from `kvp`, exports OTLP → GrafanaCloud gateway (Basic auth from `.env`); if GrafanaCloud vars are unset, falls back to file/stdout for local dev. |
 

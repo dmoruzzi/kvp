@@ -16,12 +16,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dmoruzzi/decikvp/internal/cleanup"
-	"github.com/dmoruzzi/decikvp/internal/config"
-	"github.com/dmoruzzi/decikvp/internal/server"
-	"github.com/dmoruzzi/decikvp/internal/store"
-	"github.com/dmoruzzi/decikvp/internal/telemetry"
-	"github.com/dmoruzzi/decikvp/web"
+	"github.com/dmoruzzi/kvp/internal/cleanup"
+	"github.com/dmoruzzi/kvp/internal/config"
+	"github.com/dmoruzzi/kvp/internal/server"
+	"github.com/dmoruzzi/kvp/internal/store"
+	"github.com/dmoruzzi/kvp/internal/telemetry"
+	"github.com/dmoruzzi/kvp/web"
 
 	otelhttp "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
