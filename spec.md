@@ -369,8 +369,8 @@ Default `docker compose up -d` runs app + tunnel + collector. There is **no self
 
 ### 13.2 Build & push (`.github/workflows/docker.yml`)
 - Trigger: push to `main` and tags `v*` (and PRs → build-only).
-- Buildx **`linux/amd64` only** (deliberate: no arm64 image), tags: branch ref, tag ref, short SHA, `latest` on default branch.
-- Push to `ghcr.io/<repo>` with `GITHUB_TOKEN`; scan image (e.g. `trivy`) and fail on critical findings.
+- Per-arch matrix on native runners (`ubuntu-26.04` for `linux/amd64`, `ubuntu-26.04-arm` for `linux/arm64` — no QEMU emulation), each arch pushed as `ghcr.io/<repo>:<sha>-<arch>`, then a `merge` job combines them into a multi-arch manifest with tags: branch ref, tag ref, short SHA, `latest` on default branch.
+- Push to `ghcr.io/<repo>` with `GITHUB_TOKEN`; scan merged image (e.g. `trivy`) and fail on critical findings.
 - On every push (main or tags), a `release` job cross-compiles the server for `linux/amd64` and `windows/amd64` (plus `SHA256SUMS.txt`), creating a rolling release named after the ref (`main` for branch pushes, the tag name for `v*` tags) and attaching the binaries to it.
 
 ### 13.3 GrafanaCloud provisioning
