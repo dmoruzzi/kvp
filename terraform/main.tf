@@ -10,6 +10,6 @@ terraform {
 
 provider "grafana" {
   alias = "cloud"
-  url   = "https://${var.grafana_cloud_region}.grafana.net"
+  url   = "https://${var.stack_slug}.grafana.net"
   auth  = var.grafana_cloud_service_account_token
 }

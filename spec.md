@@ -372,7 +372,7 @@ Default `docker compose up -d` runs app + tunnel (same as v1). The `observabilit
 - On every push (main or tags), a `release` job cross-compiles the server for `linux/amd64` and `windows/amd64` (plus `SHA256SUMS.txt`), creating a rolling release named after the ref (`main` for branch pushes, the tag name for `v*` tags) and attaching the binaries to it.
 
 ### 13.3 GrafanaCloud provisioning
-- On push to `main`: `terraform apply` for dashboards/alert rules, authenticated with a `GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN` stored as a CI secret (separate from the runtime write-only token in §11).
+- On push to `main`: `terraform apply` for dashboards/alert rules, authenticated with a `GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN` stored as a CI secret (separate from the runtime write-only token in §11). The provider connects to `https://<GRAFANA_CLOUD_STACK_SLUG>.grafana.net`; both secrets must be set or the job is skipped.
 
 ## 14. Testing
 

@@ -98,7 +98,8 @@ jobs:
   grafana:
     runs-on: ubuntu-latest
     needs: build
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && secrets.GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN != '' && secrets.GRAFANA_CLOUD_STACK_SLUG != ''
+    timeout-minutes: 15
     environment: grafana
     defaults:
       run:
@@ -112,7 +113,9 @@ jobs:
         run: terraform init
         env:
           GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN: ${{ secrets.GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN }}
+          TF_VAR_stack_slug: ${{ secrets.GRAFANA_CLOUD_STACK_SLUG }}
       - name: apply
         run: terraform apply -auto-approve
         env:
           GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN: ${{ secrets.GRAFANA_CLOUD_SERVICE_ACCOUNT_TOKEN }}
+          TF_VAR_stack_slug: ${{ secrets.GRAFANA_CLOUD_STACK_SLUG }}

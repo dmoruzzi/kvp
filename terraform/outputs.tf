@@ -1,6 +1,6 @@
 output "dashboard_url" {
   description = "URL of the KVP dashboard."
-  value       = "https://${var.grafana_cloud_region}.grafana.net/d/${grafana_dashboard.kvp.uid}"
+  value       = "https://${var.stack_slug}.grafana.net/d/${grafana_dashboard.kvp.uid}"
 }
 
 output "rule_group_name" {
