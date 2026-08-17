@@ -144,10 +144,32 @@ func (s *Store) Get(ctx context.Context, key string) (GetResult, error) {
 	return res, nil
 }
 
-// DeleteExpired removes every row past its expiry and returns the deleted count.
-func (s *Store) DeleteExpired(ctx context.Context) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM kv_store WHERE expires_at < ?`, s.now().Format(time.RFC3339Nano))
+// DeleteExpired removes rows past their expiry and returns the deleted count.
+// When limit > 0 at most limit rows are deleted per call; when limit <= 0 all
+// expired rows are deleted in a single statement.
+func (s *Store) DeleteExpired(ctx context.Context, limit int) (int64, error) {
+	now := s.now().Format(time.RFC3339Nano)
+
+	var probe int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM kv_store WHERE expires_at < ? LIMIT 1`, now).Scan(&probe)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: probe expired: %w", err)
+	}
+
+	var res sql.Result
+	if limit > 0 {
+		res, err = s.db.ExecContext(ctx,
+			`DELETE FROM kv_store WHERE key IN (
+				SELECT key FROM kv_store WHERE expires_at < ? ORDER BY expires_at ASC LIMIT ?
+			)`, now, limit)
+	} else {
+		res, err = s.db.ExecContext(ctx,
+			`DELETE FROM kv_store WHERE expires_at < ?`, now)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("store: delete expired: %w", err)
 	}

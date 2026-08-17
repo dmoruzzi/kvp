@@ -37,6 +37,7 @@ type Config struct {
 	BackupDir            string
 	BackupInterval       time.Duration
 	BackupRetention      int
+	CleanupSweepLimit    int
 }
 
 // Load parses configuration from the process environment.
@@ -67,6 +68,7 @@ func Parse(getenv func(string) string) (Config, error) {
 		GrafanaCloudRegion:   "prod-us-central-0",
 		BackupInterval:       24 * time.Hour,
 		BackupRetention:      7,
+		CleanupSweepLimit:    10000,
 		OTLPEndpoint:         getenv("KVP_OTEL_EXPORTER_OTLP_ENDPOINT"),
 		GrafanaCloudStackID:  getenv("GRAFANA_CLOUD_STACK_ID"),
 		GrafanaCloudAPIToken: getenv("GRAFANA_CLOUD_API_TOKEN"),
@@ -210,6 +212,12 @@ func Parse(getenv func(string) string) (Config, error) {
 		}
 		return err
 	})
+	assign("KVP_CLEANUP_SWEEP_LIMIT", func(v string) error {
+		if v != "" {
+			cfg.CleanupSweepLimit, err = parseNonNegativeInt(v)
+		}
+		return err
+	})
 
 	return cfg, err
 }
@@ -266,6 +274,17 @@ func parsePositiveInt(v string) (int, error) {
 	}
 	if n <= 0 {
 		return 0, fmt.Errorf("must be > 0, got %d", n)
+	}
+	return n, nil
+}
+
+func parseNonNegativeInt(v string) (int, error) {
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer %q", v)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("must be >= 0, got %d", n)
 	}
 	return n, nil
 }

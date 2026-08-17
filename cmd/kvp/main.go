@@ -64,7 +64,7 @@ func run() error {
 	health := telemetry.NewHealth(func(ctx context.Context) error { return st.Ping(ctx) })
 	tel.Metrics.SetDBLimit(cfg.MaxDBBytes)
 
-	expiry := cleanup.NewExpiryRunner(st, cfg.CleanupInterval, logger, tel.Metrics)
+	expiry := cleanup.NewExpiryRunner(st, cfg.CleanupInterval, cfg.CleanupSweepLimit, logger, tel.Metrics)
 	evictor := cleanup.NewEvictor(st, cfg.MaxDBBytes, cfg.CleanupBatchSize, cfg.CleanupMaxRuns, cfg.SizeCleanupThrottle, logger, tel.Metrics)
 	backuper := cleanup.NewBackuper(st, cfg.BackupDir, cfg.BackupInterval, cfg.BackupRetention, logger, tel.Metrics)
 

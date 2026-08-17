@@ -70,7 +70,7 @@ func (r *recording) had(kind, result string) bool {
 
 type stubStore struct{}
 
-func (stubStore) DeleteExpired(context.Context) (int64, error)  { return 0, nil }
+func (stubStore) DeleteExpired(context.Context, int) (int64, error)  { return 0, nil }
 func (stubStore) EvictOldest(context.Context, int64, int, int) (int64, error) {
 	return 0, nil
 }
@@ -106,7 +106,7 @@ func TestExpiryRunOnce(t *testing.T) {
 
 	st.SetClock(func() time.Time { return now.Add(2 * time.Hour) })
 	rec := newRecording()
-	r := NewExpiryRunner(st, time.Hour, discardLogger(), rec)
+	r := NewExpiryRunner(st, time.Hour, 0, discardLogger(), rec)
 
 	deleted, err := r.RunOnce(ctx)
 	if err != nil {
@@ -131,12 +131,80 @@ func TestExpiryRunOnceErrorRecorded(t *testing.T) {
 	st := newStore(t)
 	_ = st.Close()
 	rec := newRecording()
-	r := NewExpiryRunner(st, time.Hour, discardLogger(), rec)
+	r := NewExpiryRunner(st, time.Hour, 0, discardLogger(), rec)
 	if _, err := r.RunOnce(context.Background()); err == nil {
 		t.Error("RunOnce on closed store: nil error, want error")
 	}
 	if !rec.had("expiry", "error") {
 		t.Error("missing CleanupRun(expiry, error)")
+	}
+}
+
+func TestExpiryRunOnceNoopWhenNothingExpired(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	st.SetClock(func() time.Time { return now })
+
+	mustPut(t, st, "a", 10*time.Hour)
+	mustPut(t, st, "b", 10*time.Hour)
+
+	// Advance 1h — within the 10h TTL, so the probe returns no rows.
+	st.SetClock(func() time.Time { return now.Add(1 * time.Hour) })
+	rec := newRecording()
+	r := NewExpiryRunner(st, time.Hour, 0, discardLogger(), rec)
+
+	deleted, err := r.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("RunOnce deleted = %d, want 0 (probe should short-circuit)", deleted)
+	}
+	if !rec.had("expiry", "ok") {
+		t.Error("missing CleanupRun(expiry, ok)")
+	}
+	if rec.deleted["expiry"] != 0 {
+		t.Errorf("CleanupDeleted(expiry) = %d, want 0", rec.deleted["expiry"])
+	}
+	rows, _ := st.RowCount(ctx)
+	if rows != 2 {
+		t.Errorf("RowCount = %d, want 2 (no rows should be removed)", rows)
+	}
+}
+
+func TestExpiryRunOnceRespectsSweepLimit(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	st.SetClock(func() time.Time { return now })
+
+	// Insert 5 rows all set to expire in 1h.
+	for i := 1; i <= 5; i++ {
+		mustPut(t, st, "k"+string(rune('0'+i)), time.Hour)
+	}
+
+	// Advance past expiry.
+	st.SetClock(func() time.Time { return now.Add(2 * time.Hour) })
+	rec := newRecording()
+	r := NewExpiryRunner(st, time.Hour, 2, discardLogger(), rec)
+
+	deleted, err := r.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("RunOnce deleted = %d, want 2 (sweep limit)", deleted)
+	}
+	if !rec.had("expiry", "ok") {
+		t.Error("missing CleanupRun(expiry, ok)")
+	}
+	if rec.deleted["expiry"] != 2 {
+		t.Errorf("CleanupDeleted(expiry) = %d, want 2", rec.deleted["expiry"])
+	}
+	rows, _ := st.RowCount(ctx)
+	if rows != 3 {
+		t.Errorf("RowCount = %d, want 3", rows)
 	}
 }
 

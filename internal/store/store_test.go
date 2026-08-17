@@ -184,7 +184,7 @@ func TestDeleteExpiredSweep(t *testing.T) {
 	}
 
 	s.now = fixed(now.Add(2 * time.Hour))
-	deleted, err := s.DeleteExpired(ctx)
+	deleted, err := s.DeleteExpired(ctx, 0)
 	if err != nil {
 		t.Fatalf("DeleteExpired: %v", err)
 	}
@@ -201,12 +201,135 @@ func TestDeleteExpiredSweep(t *testing.T) {
 	}
 
 	// Running again deletes nothing.
-	deleted, err = s.DeleteExpired(ctx)
+	deleted, err = s.DeleteExpired(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deleted != 0 {
 		t.Errorf("second sweep deleted = %d, want 0", deleted)
+	}
+}
+
+func TestDeleteExpiredNoopWhenNothingExpired(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.now = fixed(now)
+	ctx := context.Background()
+
+	for i := 1; i <= 3; i++ {
+		key := "k" + string(rune('0'+i))
+		if err := s.Put(ctx, key, []byte("v"), 10*time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Advance time by 1h — well within the 10h TTL, so nothing expires.
+	s.now = fixed(now.Add(1 * time.Hour))
+	deleted, err := s.DeleteExpired(ctx, 0)
+	if err != nil {
+		t.Fatalf("DeleteExpired: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("DeleteExpired deleted = %d, want 0 (probe should short-circuit)", deleted)
+	}
+
+	rows, err := s.RowCount(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 3 {
+		t.Errorf("RowCount = %d, want 3 (no rows should be removed)", rows)
+	}
+}
+
+func TestDeleteExpiredEmptyTable(t *testing.T) {
+	s := newTestStore(t)
+	s.now = fixed(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	deleted, err := s.DeleteExpired(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("DeleteExpired on empty table: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("DeleteExpired on empty table deleted = %d, want 0", deleted)
+	}
+}
+
+func TestDeleteExpiredProbeErrorWrapped(t *testing.T) {
+	s := newTestStore(t)
+	_ = s.Close()
+
+	_, err := s.DeleteExpired(context.Background(), 0)
+	if err == nil {
+		t.Fatal("DeleteExpired on closed store: nil error, want error")
+	}
+}
+
+func TestDeleteExpiredRespectsSweepLimit(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.now = fixed(now)
+	ctx := context.Background()
+
+	// Insert 5 rows all set to expire in 1h.
+	for i := 1; i <= 5; i++ {
+		key := "k" + string(rune('0'+i))
+		if err := s.Put(ctx, key, []byte("v"), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Advance past expiry.
+	s.now = fixed(now.Add(2 * time.Hour))
+
+	// Sweep with limit=2 should delete only the 2 oldest.
+	deleted, err := s.DeleteExpired(ctx, 2)
+	if err != nil {
+		t.Fatalf("DeleteExpired: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("DeleteExpired deleted = %d, want 2", deleted)
+	}
+
+	rows, err := s.RowCount(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 3 {
+		t.Errorf("RowCount = %d, want 3", rows)
+	}
+}
+
+func TestDeleteExpiredSweepLimitZeroDeletesAll(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.now = fixed(now)
+	ctx := context.Background()
+
+	for i := 1; i <= 5; i++ {
+		key := "k" + string(rune('0'+i))
+		if err := s.Put(ctx, key, []byte("v"), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s.now = fixed(now.Add(2 * time.Hour))
+
+	// limit=0 means unlimited — all 5 expired rows should be deleted.
+	deleted, err := s.DeleteExpired(ctx, 0)
+	if err != nil {
+		t.Fatalf("DeleteExpired: %v", err)
+	}
+	if deleted != 5 {
+		t.Errorf("DeleteExpired deleted = %d, want 5", deleted)
+	}
+
+	rows, err := s.RowCount(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Errorf("RowCount = %d, want 0", rows)
 	}
 }
 

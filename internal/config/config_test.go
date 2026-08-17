@@ -86,6 +86,9 @@ func TestDefaults(t *testing.T) {
 	if cfg.BackupRetention != 7 {
 		t.Errorf("BackupRetention = %d, want 7", cfg.BackupRetention)
 	}
+	if cfg.CleanupSweepLimit != 10000 {
+		t.Errorf("CleanupSweepLimit = %d, want 10000", cfg.CleanupSweepLimit)
+	}
 }
 
 func TestCustomValues(t *testing.T) {
@@ -115,6 +118,7 @@ func TestCustomValues(t *testing.T) {
 		"KVP_BACKUP_DIR":                    "/backups",
 		"KVP_BACKUP_INTERVAL":               "2h",
 		"KVP_BACKUP_RETENTION":              "3",
+		"KVP_CLEANUP_SWEEP_LIMIT":           "500",
 	}))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -200,6 +204,9 @@ func TestCustomValues(t *testing.T) {
 	if cfg.BackupRetention != 3 {
 		t.Errorf("BackupRetention = %d", cfg.BackupRetention)
 	}
+	if cfg.CleanupSweepLimit != 500 {
+		t.Errorf("CleanupSweepLimit = %d, want 500", cfg.CleanupSweepLimit)
+	}
 }
 
 func TestInvalidValueErrors(t *testing.T) {
@@ -247,5 +254,22 @@ func TestBackupDisabledWhenDirEmpty(t *testing.T) {
 	}
 	if cfg.BackupDir != "" {
 		t.Errorf("BackupDir = %q, want empty", cfg.BackupDir)
+	}
+}
+
+func TestSweepLimitZeroIsUnlimited(t *testing.T) {
+	cfg, err := Parse(envMap(map[string]string{"KVP_CLEANUP_SWEEP_LIMIT": "0"}))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.CleanupSweepLimit != 0 {
+		t.Errorf("CleanupSweepLimit = %d, want 0 (unlimited)", cfg.CleanupSweepLimit)
+	}
+}
+
+func TestSweepLimitNegativeRejected(t *testing.T) {
+	_, err := Parse(envMap(map[string]string{"KVP_CLEANUP_SWEEP_LIMIT": "-1"}))
+	if err == nil {
+		t.Fatal("Parse: nil error, want error for negative sweep limit")
 	}
 }

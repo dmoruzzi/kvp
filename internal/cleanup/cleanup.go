@@ -25,7 +25,7 @@ func (noopMetrics) CleanupDeleted(string, int64)   {}
 
 // Store is the persistence surface the jobs need. *store.Store satisfies it.
 type Store interface {
-	DeleteExpired(ctx context.Context) (int64, error)
+	DeleteExpired(ctx context.Context, limit int) (int64, error)
 	EvictOldest(ctx context.Context, limit int64, batchSize, maxRuns int) (int64, error)
 	Size(ctx context.Context) (int64, error)
 	IncrementalVacuum(ctx context.Context, n int) error
@@ -35,26 +35,27 @@ type Store interface {
 
 // ExpiryRunner deletes expired rows every interval (§8.1).
 type ExpiryRunner struct {
-	st       Store
-	interval time.Duration
-	logger   *slog.Logger
-	metrics  Metrics
+	st         Store
+	interval   time.Duration
+	sweepLimit int
+	logger     *slog.Logger
+	metrics    Metrics
 }
 
-func NewExpiryRunner(st Store, interval time.Duration, logger *slog.Logger, m Metrics) *ExpiryRunner {
+func NewExpiryRunner(st Store, interval time.Duration, sweepLimit int, logger *slog.Logger, m Metrics) *ExpiryRunner {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if m == nil {
 		m = noopMetrics{}
 	}
-	return &ExpiryRunner{st: st, interval: interval, logger: logger, metrics: m}
+	return &ExpiryRunner{st: st, interval: interval, sweepLimit: sweepLimit, logger: logger, metrics: m}
 }
 
 // RunOnce performs a single sweep and returns the deleted count.
 func (r *ExpiryRunner) RunOnce(ctx context.Context) (int64, error) {
 	start := time.Now()
-	n, err := r.st.DeleteExpired(ctx)
+	n, err := r.st.DeleteExpired(ctx, r.sweepLimit)
 	if err != nil {
 		r.metrics.CleanupRun("expiry", "error")
 		r.logger.Error("expiry sweep failed", "error", err)

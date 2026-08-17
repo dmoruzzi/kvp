@@ -170,7 +170,7 @@ All jobs are launched from `main`, run in their own goroutines, share a `context
 
 ### 8.1 Expiry sweep (background)
 
-Every `KVP_CLEANUP_INTERVAL` (default 1h): `DELETE FROM kv_store WHERE expires_at < ?` using the `expires_at` index. Counts and errors are logged and metered.
+Every `KVP_CLEANUP_INTERVAL` (default 1h): a lightweight `SELECT 1 FROM kv_store WHERE expires_at < ? LIMIT 1` probe runs first using the `expires_at` index. If no expired rows exist, the sweep returns immediately — avoiding an unnecessary `DELETE` and its associated write lock on SQLite. When the probe finds expired rows, the sweep proceeds with a bounded `DELETE`: `DELETE FROM kv_store WHERE key IN (SELECT key FROM kv_store WHERE expires_at < ? ORDER BY expires_at ASC LIMIT ?)` using `KVP_CLEANUP_SWEEP_LIMIT` (default 10000). Setting `KVP_CLEANUP_SWEEP_LIMIT` to `0` removes the bound and deletes all expired rows in one statement. Counts and errors are logged and metered.
 
 ### 8.2 Size-based eviction (on POST + background)
 
@@ -318,6 +318,7 @@ All config via environment variables, parsed/validated in `internal/config` (fai
 | `KVP_SIZE_CLEANUP_THROTTLE` | `1m` | Min interval between size evictions |
 | `KVP_CLEANUP_BATCH_SIZE` | `1000` | Rows per eviction statement |
 | `KVP_CLEANUP_MAX_RUNS` | `64` | Max batches per eviction run |
+| `KVP_CLEANUP_SWEEP_LIMIT` | `10000` | Max rows per expiry sweep; `0` = unlimited |
 | `KVP_RATE_LIMIT_RPS` | `10` | Per-IP token refill rate |
 | `KVP_RATE_LIMIT_BURST` | `20` | Per-IP burst |
 | `KVP_TRUSTED_PROXIES` | *(empty)* | CIDRs allowed to set forwarded client-IP headers |
