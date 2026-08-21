@@ -28,14 +28,26 @@ import (
 	otelhttp "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
+// Compile-time wiring checks: the telemetry implementation must keep
+// satisfying every consumer-facing metrics interface. A signature drift in
+// either package fails the build here instead of at the wiring site.
+var (
+	_ server.Metrics  = (*telemetry.Metrics)(nil)
+	_ cleanup.Metrics = (*telemetry.Metrics)(nil)
+)
+
 func main() {
-	if err := run(); err != nil {
+	// The signal context owns the process lifetime; run() treats it as an
+	// opaque cancellation source so tests can drive shutdown directly.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "kvp:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(sigCtx context.Context) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -132,14 +144,10 @@ func run() error {
 		"memory_cache_bytes", cfg.MemoryCacheBytes,
 		"backup_dir", cfg.BackupDir)
 
-	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	select {
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server failed", "error", err)
-			stop()
 		}
 	case <-sigCtx.Done():
 		logger.Info("shutdown signal received")

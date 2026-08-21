@@ -372,3 +372,139 @@ type boomError struct{}
 
 func (*boomError) Error() string { return "boom" }
 
+// Compile-time check: the production store keeps satisfying the job interface.
+var _ Store = (*store.Store)(nil)
+
+// waitFor polls cond until it returns true or the deadline passes.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// stopRun cancels ctx and asserts the loop goroutine returns promptly.
+func stopRun(t *testing.T, cancel context.CancelFunc, done <-chan struct{}) {
+	t.Helper()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop did not return after context cancellation")
+	}
+}
+
+func TestExpiryRunnerRunLoopSweepsAndStops(t *testing.T) {
+	st := newStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Real clock: the row lapses while the loop is starting up.
+	mustPut(t, st, "a", 10*time.Millisecond)
+
+	rec := newRecording()
+	r := NewExpiryRunner(st, 25*time.Millisecond, 0, discardLogger(), rec)
+
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+
+	waitFor(t, "expiry sweep to delete the expired row", func() bool {
+		rows, err := st.RowCount(ctx)
+		return err == nil && rows == 0
+	})
+	if !rec.had("expiry", "ok") {
+		t.Error("missing CleanupRun(expiry, ok) from the loop")
+	}
+	stopRun(t, cancel, done)
+}
+
+func TestExpiryRunnerConstructorDefaults(t *testing.T) {
+	st := newStore(t)
+	// nil logger and metrics must fall back to defaults without panicking.
+	r := NewExpiryRunner(st, time.Hour, 0, nil, nil)
+	if _, err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce with default logger/metrics: %v", err)
+	}
+}
+
+func TestEvictorRunLoopTicksAndStops(t *testing.T) {
+	var mu sync.Mutex
+	evictions := 0
+	e := newTestEvictor(func(context.Context) (int64, error) {
+		mu.Lock()
+		evictions++
+		mu.Unlock()
+		return 0, nil
+	}, func(context.Context) (int64, error) { return 999999, nil }) // always over limit
+	e.throttle = 20 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.RunLoop(ctx); close(done) }()
+
+	waitFor(t, "at least two eviction ticks", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return evictions >= 2
+	})
+	stopRun(t, cancel, done)
+}
+
+func TestEvictorConstructorDefaults(t *testing.T) {
+	st := newStore(t)
+	// nil logger/metrics; real store wiring through the constructor.
+	e := NewEvictor(st, 1<<30, 100, 2, time.Minute, nil, nil)
+	n, err := e.MaybeEvict(context.Background())
+	if err != nil {
+		t.Fatalf("MaybeEvict: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("MaybeEvict deleted = %d, want 0 (empty store under limit)", n)
+	}
+}
+
+func TestBackuperRunLoopCreatesBackupsAndStops(t *testing.T) {
+	st := newStore(t)
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	b := NewBackuper(st, dir, 25*time.Millisecond, 3, discardLogger(), newRecording())
+
+	done := make(chan struct{})
+	go func() { b.Run(ctx); close(done) }()
+
+	waitFor(t, "first backup file", func() bool {
+		files, _ := filepath.Glob(filepath.Join(dir, "kvp-*.db"))
+		return len(files) >= 1
+	})
+	stopRun(t, cancel, done)
+}
+
+func TestBackuperRunDisabledWhenDirEmpty(t *testing.T) {
+	st := newStore(t)
+	b := NewBackuper(st, "", time.Hour, 3, discardLogger(), nil)
+
+	done := make(chan struct{})
+	go func() { b.Run(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run with empty backup dir must return immediately")
+	}
+}
+
+func TestBackuperConstructorDefaults(t *testing.T) {
+	st := newStore(t)
+	dir := t.TempDir()
+	b := NewBackuper(st, dir, time.Hour, 3, nil, nil)
+	if err := b.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce with default logger/metrics: %v", err)
+	}
+}
+

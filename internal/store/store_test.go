@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -892,5 +893,58 @@ func TestSQLiteOnlyModeHasNoMemoryLayer(t *testing.T) {
 	got, err := s.Get(ctx, "k")
 	if err != nil || !got.Found || string(got.Value) != "v" {
 		t.Errorf("Get = %+v err %v, want found v", got, err)
+	}
+}
+
+func TestRetainBackups(t *testing.T) {
+	st := newTestStore(t)
+	dir := t.TempDir()
+	write := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("kvp-20260101T000000.000Z.db")
+	write("kvp-20260102T000000.000Z.db")
+	write("kvp-20260103T000000.000Z.db")
+	write("notes.txt")   // not a backup: must survive
+	write("kvp-old.bak") // wrong extension: must survive
+
+	deleted, err := st.RetainBackups(dir, 2)
+	if err != nil {
+		t.Fatalf("RetainBackups: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("RetainBackups deleted = %d, want 1", deleted)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "kvp-20260101T000000.000Z.db")); !os.IsNotExist(err) {
+		t.Error("oldest backup still exists after retention")
+	}
+	for _, name := range []string{
+		"kvp-20260102T000000.000Z.db",
+		"kvp-20260103T000000.000Z.db",
+		"notes.txt",
+		"kvp-old.bak",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s should have been retained: %v", name, err)
+		}
+	}
+
+	// Retention larger than the file count is a no-op.
+	deleted, err = st.RetainBackups(dir, 10)
+	if err != nil {
+		t.Fatalf("RetainBackups(10): %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("RetainBackups(10) deleted = %d, want 0", deleted)
+	}
+}
+
+func TestRetainBackupsMissingDirErrors(t *testing.T) {
+	st := newTestStore(t)
+	if _, err := st.RetainBackups(filepath.Join(t.TempDir(), "nope"), 2); err == nil {
+		t.Error("RetainBackups on missing dir: nil error, want error")
 	}
 }
