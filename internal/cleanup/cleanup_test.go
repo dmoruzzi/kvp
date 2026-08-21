@@ -14,7 +14,7 @@ import (
 
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "kvp.db"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "kvp.db"), 0)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -74,7 +74,7 @@ func (stubStore) DeleteExpired(context.Context, int) (int64, error)  { return 0,
 func (stubStore) EvictOldest(context.Context, int64, int, int) (int64, error) {
 	return 0, nil
 }
-func (stubStore) Size(context.Context) (int64, error)     { return 0, nil }
+func (stubStore) Usage(context.Context) (int64, error)    { return 0, nil }
 func (stubStore) IncrementalVacuum(context.Context, int) error { return nil }
 func (stubStore) Backup(context.Context, string) (string, error) { return "", nil }
 func (stubStore) RetainBackups(string, int) (int, error)  { return 0, nil }

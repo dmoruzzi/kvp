@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -21,12 +22,40 @@ const (
 	journalMode   = "WAL"
 	synchronous   = "NORMAL"
 	busyTimeoutMS = 5000
+
+	// entryOverhead approximates per-entry memory cost beyond key+value bytes
+	// (map slot, slice header, time.Time).
+	entryOverhead = 96
+
+	// maxDeleteParams bounds the placeholders per DELETE IN statement
+	// (SQLite's default host-parameter limit is 999).
+	maxDeleteParams = 500
 )
 
-// Store wraps the SQLite database.
+// entry is a value resident in the memory layer.
+type entry struct {
+	value     []byte
+	expiresAt time.Time
+}
+
+func entrySize(key string, e entry) int64 {
+	return int64(len(key) + len(e.value) + entryOverhead)
+}
+
+// Store wraps the SQLite database and, when enabled, an in-memory layer that
+// serves reads (spec §4): memory is authoritative while the process runs and
+// SQLite provides durability across restarts. Every write goes to SQLite first
+// and is mirrored into memory; evictions and expiry sweeps remove from both so
+// the two stay consistent. A memLimit of 0 disables the memory layer entirely
+// (SQLite-only mode).
 type Store struct {
 	db  *sql.DB
 	now func() time.Time
+
+	mu         sync.RWMutex
+	cache      map[string]entry
+	cacheBytes int64
+	memLimit   int64
 }
 
 // GetResult is the outcome of a key lookup.
@@ -37,8 +66,10 @@ type GetResult struct {
 }
 
 // Open opens (creating if needed) the SQLite database at path, applies the
-// schema migration and the required PRAGMAs from the spec §4.
-func Open(path string) (*Store, error) {
+// schema migration and the required PRAGMAs from the spec §4. When memLimit is
+// positive, the in-memory layer is enabled and preloaded with all non-expired
+// rows; a memLimit of 0 keeps every read on SQLite.
+func Open(path string, memLimit int64) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("store: empty db path")
 	}
@@ -51,12 +82,54 @@ func Open(path string) (*Store, error) {
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 
-	s := &Store{db: db, now: time.Now}
+	s := &Store{db: db, now: time.Now, memLimit: memLimit}
+	if memLimit > 0 {
+		s.cache = make(map[string]entry)
+	}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+	if memLimit > 0 {
+		if err := s.loadCache(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	return s, nil
+}
+
+// loadCache populates the memory layer from persisted rows. Rows already past
+// their expiry are skipped and left for the sweep/lazy delete to remove.
+func (s *Store) loadCache() error {
+	rows, err := s.db.Query(`SELECT key, value, expires_at FROM kv_store`)
+	if err != nil {
+		return fmt.Errorf("store: load cache: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	now := s.now()
+	for rows.Next() {
+		var key, expiresStr string
+		var value []byte
+		if err := rows.Scan(&key, &value, &expiresStr); err != nil {
+			return fmt.Errorf("store: load cache scan: %w", err)
+		}
+		expiresAt, err := time.Parse(time.RFC3339Nano, expiresStr)
+		if err != nil {
+			return fmt.Errorf("store: load cache %q: parse expires_at %q: %w", key, expiresStr, err)
+		}
+		if now.After(expiresAt) {
+			continue
+		}
+		e := entry{value: value, expiresAt: expiresAt}
+		s.cache[key] = e
+		s.cacheBytes += entrySize(key, e)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: load cache: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) migrate() error {
@@ -100,7 +173,8 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
-// Put upserts value under key, setting expiry to now + ttl.
+// Put upserts value under key, setting expiry to now + ttl. The write hits
+// SQLite first; only on success is the value mirrored into the memory layer.
 func (s *Store) Put(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	expiresAt := s.now().Add(ttl)
 	_, err := s.db.ExecContext(ctx, `
@@ -110,12 +184,74 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value, expires_at=excluded.expires
 	if err != nil {
 		return fmt.Errorf("store: put %q: %w", key, err)
 	}
+	if s.caching() {
+		s.cachePut(key, value, expiresAt)
+	}
 	return nil
 }
 
-// Get retrieves value for key. A row past its expiry is deleted on the spot and
-// reported as Expired.
+func (s *Store) cachePut(key string, value []byte, expiresAt time.Time) {
+	e := entry{value: value, expiresAt: expiresAt}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if old, ok := s.cache[key]; ok {
+		s.cacheBytes -= entrySize(key, old)
+	}
+	s.cache[key] = e
+	s.cacheBytes += entrySize(key, e)
+}
+
+// Get retrieves value for key. With the memory layer enabled the lookup never
+// touches SQLite — memory is authoritative (misses are misses); a row past its
+// expiry is removed from both layers on the spot and reported as Expired.
+// Without the memory layer it reads SQLite directly.
 func (s *Store) Get(ctx context.Context, key string) (GetResult, error) {
+	if s.caching() {
+		return s.getCached(ctx, key)
+	}
+	return s.getDB(ctx, key)
+}
+
+func (s *Store) getCached(ctx context.Context, key string) (GetResult, error) {
+	var res GetResult
+
+	s.mu.RLock()
+	e, ok := s.cache[key]
+	s.mu.RUnlock()
+	if !ok {
+		return res, nil
+	}
+
+	res.Found = true
+	if !s.now().After(e.expiresAt) {
+		res.Value = e.value
+		return res, nil
+	}
+
+	// Expired: drop from memory unless a concurrent Put refreshed the entry,
+	// then delete the matching (stale) row from SQLite in the background.
+	s.mu.Lock()
+	if cur, ok := s.cache[key]; ok && cur.expiresAt.Equal(e.expiresAt) {
+		s.cacheBytes -= entrySize(key, cur)
+		delete(s.cache, key)
+	}
+	s.mu.Unlock()
+
+	expiresStr := e.expiresAt.Format(time.RFC3339Nano)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		// Best-effort: guarded by expires_at so a concurrent refresh survives;
+		// the expiry sweep removes any straggler.
+		_, _ = s.db.ExecContext(ctx,
+			`DELETE FROM kv_store WHERE key = ? AND expires_at = ?`, key, expiresStr)
+	}()
+
+	res.Expired = true
+	return res, nil
+}
+
+func (s *Store) getDB(ctx context.Context, key string) (GetResult, error) {
 	var res GetResult
 	row := s.db.QueryRowContext(ctx,
 		`SELECT value, expires_at FROM kv_store WHERE key = ?`, key)
@@ -144,15 +280,30 @@ func (s *Store) Get(ctx context.Context, key string) (GetResult, error) {
 	return res, nil
 }
 
-// DeleteExpired removes rows past their expiry and returns the deleted count.
-// When limit > 0 at most limit rows are deleted per call; when limit <= 0 all
-// expired rows are deleted in a single statement.
+// DeleteExpired removes rows past their expiry — from the memory layer and
+// SQLite — and returns the deleted count. When limit > 0 at most limit rows
+// are deleted per call; when limit <= 0 all expired rows are deleted in a
+// single statement. The memory layer always purges every expired entry: it is
+// authoritative for reads, and any DB rows left behind by the limit are
+// unreachable and removed on a later sweep.
 func (s *Store) DeleteExpired(ctx context.Context, limit int) (int64, error) {
-	now := s.now().Format(time.RFC3339Nano)
+	now := s.now()
+	nowStr := now.Format(time.RFC3339Nano)
+
+	if s.caching() {
+		s.mu.Lock()
+		for key, e := range s.cache {
+			if now.After(e.expiresAt) {
+				s.cacheBytes -= entrySize(key, e)
+				delete(s.cache, key)
+			}
+		}
+		s.mu.Unlock()
+	}
 
 	var probe int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT 1 FROM kv_store WHERE expires_at < ? LIMIT 1`, now).Scan(&probe)
+		`SELECT 1 FROM kv_store WHERE expires_at < ? LIMIT 1`, nowStr).Scan(&probe)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
@@ -165,10 +316,10 @@ func (s *Store) DeleteExpired(ctx context.Context, limit int) (int64, error) {
 		res, err = s.db.ExecContext(ctx,
 			`DELETE FROM kv_store WHERE key IN (
 				SELECT key FROM kv_store WHERE expires_at < ? ORDER BY expires_at ASC LIMIT ?
-			)`, now, limit)
+			)`, nowStr, limit)
 	} else {
 		res, err = s.db.ExecContext(ctx,
-			`DELETE FROM kv_store WHERE expires_at < ?`, now)
+			`DELETE FROM kv_store WHERE expires_at < ?`, nowStr)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("store: delete expired: %w", err)
@@ -180,9 +331,15 @@ func (s *Store) DeleteExpired(ctx context.Context, limit int) (int64, error) {
 	return n, nil
 }
 
-// EvictOldest runs the size-based eviction described in the spec §8.2 using the
+// EvictOldest runs the size-based eviction described in the spec §8.2. With the
+// memory layer enabled the budget applies to cache bytes; otherwise to the
 // real on-disk size. See evictOldest for the algorithm.
 func (s *Store) EvictOldest(ctx context.Context, limit int64, batchSize, maxRuns int) (int64, error) {
+	if s.caching() {
+		return s.evictOldest(ctx, limit, batchSize, maxRuns, func() (int64, error) {
+			return s.CacheBytes(), nil
+		})
+	}
 	return s.evictOldest(ctx, limit, batchSize, maxRuns, func() (int64, error) {
 		return s.Size(ctx)
 	})
@@ -219,15 +376,20 @@ func (s *Store) evictOldest(ctx context.Context, limit int64, batchSize, maxRuns
 			return deleted, nil
 		}
 
-		res, err := s.db.ExecContext(ctx, `
+		var n int64
+		if s.caching() {
+			n, err = s.deleteOldestBatchCached(ctx, batch)
+		} else {
+			var res sql.Result
+			res, err = s.db.ExecContext(ctx, `
 DELETE FROM kv_store
 WHERE key IN (SELECT key FROM kv_store ORDER BY expires_at ASC LIMIT ?)`, batch)
+			if err == nil {
+				n, err = res.RowsAffected()
+			}
+		}
 		if err != nil {
 			return deleted, fmt.Errorf("store: evict batch: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return deleted, err
 		}
 		if n == 0 {
 			return deleted, nil
@@ -235,6 +397,99 @@ WHERE key IN (SELECT key FROM kv_store ORDER BY expires_at ASC LIMIT ?)`, batch)
 		deleted += n
 	}
 	return deleted, nil
+}
+
+// deleteOldestBatchCached evicts one oldest-expiring batch from both layers:
+// it selects the victim keys, deletes exactly those rows from SQLite and drops
+// them from memory. Selecting the keys first keeps the two layers in lockstep.
+func (s *Store) deleteOldestBatchCached(ctx context.Context, batch int) (int64, error) {
+	keys := make([]string, 0, batch)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key FROM kv_store ORDER BY expires_at ASC LIMIT ?`, batch)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	var deleted int64
+	for start := 0; start < len(keys); start += maxDeleteParams {
+		end := start + maxDeleteParams
+		if end > len(keys) {
+			end = len(keys)
+		}
+		chunk := keys[start:end]
+		res, err := s.db.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM kv_store WHERE key IN (%s)`, placeholders(len(chunk))),
+			chunkToArgs(chunk)...)
+		if err != nil {
+			return deleted, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return deleted, err
+		}
+		deleted += n
+	}
+
+	s.mu.Lock()
+	for _, key := range keys {
+		if e, ok := s.cache[key]; ok {
+			s.cacheBytes -= entrySize(key, e)
+			delete(s.cache, key)
+		}
+	}
+	s.mu.Unlock()
+
+	return deleted, nil
+}
+
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+}
+
+func chunkToArgs(chunk []string) []any {
+	args := make([]any, len(chunk))
+	for i, k := range chunk {
+		args[i] = k
+	}
+	return args
+}
+
+// caching reports whether the in-memory layer is enabled.
+func (s *Store) caching() bool { return s.memLimit > 0 }
+
+// CacheBytes returns the approximate memory used by the in-memory layer
+// (always 0 when the layer is disabled).
+func (s *Store) CacheBytes() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cacheBytes
+}
+
+// Usage reports the footprint the eviction budget applies to: cache bytes when
+// the memory layer is enabled, otherwise the on-disk database size.
+func (s *Store) Usage(ctx context.Context) (int64, error) {
+	if s.caching() {
+		return s.CacheBytes(), nil
+	}
+	return s.Size(ctx)
 }
 
 // Size returns the on-disk footprint of the database including WAL files.

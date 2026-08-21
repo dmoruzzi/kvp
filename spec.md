@@ -90,6 +90,7 @@ CREATE INDEX IF NOT EXISTS idx_kv_store_expires_at ON kv_store(expires_at);
 - **Index**: `idx_kv_store_expires_at` backs the expiry sweep and oldest-first eviction; without it both jobs degrade to full scans.
 - **WAL mode** allows concurrent readers with the writer; `busy_timeout` prevents immediate `SQLITE_BUSY`.
 - **`auto_vacuum=INCREMENTAL`**: deleted space stays in the file until `PRAGMA incremental_vacuum(N)` is run by the maintenance job (§8.4), avoiding unbounded file growth.
+- **Memory layer**: unless `KVP_MEMORY_CACHE_MB=0`, all live keys are held in memory and reads never touch SQLite — memory is authoritative while the process runs, SQLite is the durable mirror across restarts. Writes hit SQLite first and are mirrored into memory; expiry sweeps and size evictions remove from both layers. When the memory budget is exceeded, oldest-expiring entries are evicted from both layers (§8.2).
 
 ## 5. HTTP API
 
@@ -176,7 +177,7 @@ Every `KVP_CLEANUP_INTERVAL` (default 1h): a lightweight `SELECT 1 FROM kv_store
 
 Fixed algorithm — **never deletes the whole table** (v1 bug #1):
 
-1. If `db_size < KVP_MAX_DB_BYTES` (default 64 MiB) → no-op.
+1. If `db_size < KVP_MAX_DB_BYTES` (default 64 MiB) → no-op. With the memory layer enabled (§4) the budget applies to cache bytes instead of the on-disk file size.
 2. Loop in batches of `KVP_CLEANUP_BATCH_SIZE` (default 1000):
    `DELETE FROM kv_store WHERE key IN (SELECT key FROM kv_store ORDER BY expires_at ASC LIMIT ?)`
    Oldest-expiring rows are evicted first; each batch is a bounded statement, so a run cannot wipe the table.
@@ -313,6 +314,7 @@ All config via environment variables, parsed/validated in `internal/config` (fai
 | `KVP_MAX_BODY_BYTES` | `1048576` (1 MiB) | Max POST body |
 | `KVP_MAX_KEY_BYTES` | `256` | Max key length |
 | `KVP_MAX_DB_BYTES` | `67108864` (64 MiB) | Size-eviction threshold |
+| `KVP_MEMORY_CACHE_MB` | *(unset: follows `KVP_MAX_DB_BYTES`)* | In-memory store budget (MiB). Unset → bound to the DB size budget; `0` → SQLite-only mode (no memory layer); `N` → cap at N MiB |
 | `KVP_TTL` | `24h` | Value lifetime (Go duration) |
 | `KVP_CLEANUP_INTERVAL` | `1h` | Expiry sweep period |
 | `KVP_SIZE_CLEANUP_THROTTLE` | `1m` | Min interval between size evictions |

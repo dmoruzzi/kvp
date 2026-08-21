@@ -19,6 +19,7 @@ type Config struct {
 	MaxBodyBytes         int64
 	MaxKeyBytes          int
 	MaxDBBytes           int64
+	MemoryCacheBytes     int64
 	TTL                  time.Duration
 	CleanupInterval      time.Duration
 	SizeCleanupThrottle  time.Duration
@@ -124,6 +125,15 @@ func Parse(getenv func(string) string) (Config, error) {
 		}
 		return err
 	})
+	memCacheSet := false
+	memCacheMB := int64(0)
+	assign("KVP_MEMORY_CACHE_MB", func(v string) error {
+		if v != "" {
+			memCacheMB, err = parseNonNegativeInt64(v)
+			memCacheSet = true
+		}
+		return err
+	})
 	assign("KVP_TTL", func(v string) error {
 		if v != "" {
 			cfg.TTL, err = parsePositiveDuration(v)
@@ -219,6 +229,14 @@ func Parse(getenv func(string) string) (Config, error) {
 		return err
 	})
 
+	// Unset KVP_MEMORY_CACHE_MB binds the memory layer to the DB size budget;
+	// "0" disables it (SQLite-only mode); N caps it at N MiB.
+	if memCacheSet {
+		cfg.MemoryCacheBytes = memCacheMB * 1024 * 1024
+	} else {
+		cfg.MemoryCacheBytes = cfg.MaxDBBytes
+	}
+
 	return cfg, err
 }
 
@@ -263,6 +281,17 @@ func parsePositiveInt64(v string) (int64, error) {
 	}
 	if n <= 0 {
 		return 0, fmt.Errorf("must be > 0, got %d", n)
+	}
+	return n, nil
+}
+
+func parseNonNegativeInt64(v string) (int64, error) {
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer %q", v)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("must be >= 0, got %d", n)
 	}
 	return n, nil
 }

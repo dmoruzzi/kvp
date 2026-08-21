@@ -26,7 +26,7 @@ var testIndexFS fs.FS = fstest.MapFS{
 
 func newTestServer(t *testing.T, o Options) (http.Handler, *store.Store) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "kvp.db"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "kvp.db"), 0)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestMethodNotAllowed(t *testing.T) {
 }
 
 func TestEmptyKeyBadRequest(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "kvp.db"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "kvp.db"), 0)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

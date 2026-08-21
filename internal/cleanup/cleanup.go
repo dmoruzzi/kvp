@@ -20,14 +20,16 @@ type Metrics interface {
 
 type noopMetrics struct{}
 
-func (noopMetrics) CleanupRun(string, string)      {}
-func (noopMetrics) CleanupDeleted(string, int64)   {}
+func (noopMetrics) CleanupRun(string, string)    {}
+func (noopMetrics) CleanupDeleted(string, int64) {}
 
 // Store is the persistence surface the jobs need. *store.Store satisfies it.
 type Store interface {
 	DeleteExpired(ctx context.Context, limit int) (int64, error)
 	EvictOldest(ctx context.Context, limit int64, batchSize, maxRuns int) (int64, error)
-	Size(ctx context.Context) (int64, error)
+	// Usage reports the footprint the size budget applies to: cache bytes when
+	// the memory layer is enabled, otherwise the on-disk database size.
+	Usage(ctx context.Context) (int64, error)
 	IncrementalVacuum(ctx context.Context, n int) error
 	Backup(ctx context.Context, dir string) (string, error)
 	RetainBackups(dir string, n int) (int, error)
@@ -85,16 +87,16 @@ func (r *ExpiryRunner) Run(ctx context.Context) {
 // Evictor enforces the DB size budget (§8.2). Runs are throttled to at most one
 // per throttle window and guarded against concurrent overlap (singleflight).
 type Evictor struct {
-	st         Store
-	limit      int64
-	batchSize  int
-	maxRuns    int
-	throttle   time.Duration
-	logger     *slog.Logger
-	metrics    Metrics
-	evict      func(ctx context.Context) (int64, error)
-	size       func(ctx context.Context) (int64, error)
-	now        func() time.Time
+	st        Store
+	limit     int64
+	batchSize int
+	maxRuns   int
+	throttle  time.Duration
+	logger    *slog.Logger
+	metrics   Metrics
+	evict     func(ctx context.Context) (int64, error)
+	size      func(ctx context.Context) (int64, error)
+	now       func() time.Time
 
 	mu      sync.Mutex
 	running bool
@@ -115,7 +117,7 @@ func NewEvictor(st Store, limit int64, batchSize, maxRuns int, throttle time.Dur
 	e.evict = func(ctx context.Context) (int64, error) {
 		return st.EvictOldest(ctx, limit, batchSize, maxRuns)
 	}
-	e.size = func(ctx context.Context) (int64, error) { return st.Size(ctx) }
+	e.size = func(ctx context.Context) (int64, error) { return st.Usage(ctx) }
 	return e
 }
 

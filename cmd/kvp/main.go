@@ -54,7 +54,7 @@ func run() error {
 	}
 	logger := tel.Logger
 
-	st, err := store.Open(cfg.DBPath)
+	st, err := store.Open(cfg.DBPath, cfg.MemoryCacheBytes)
 	if err != nil {
 		_ = tel.Shutdown(context.Background())
 		return fmt.Errorf("open store: %w", err)
@@ -65,8 +65,19 @@ func run() error {
 	tel.Metrics.SetDBLimit(cfg.MaxDBBytes)
 
 	expiry := cleanup.NewExpiryRunner(st, cfg.CleanupInterval, cfg.CleanupSweepLimit, logger, tel.Metrics)
-	evictor := cleanup.NewEvictor(st, cfg.MaxDBBytes, cfg.CleanupBatchSize, cfg.CleanupMaxRuns, cfg.SizeCleanupThrottle, logger, tel.Metrics)
+	// With the memory layer enabled the size budget applies to cache bytes;
+	// otherwise to the on-disk database (spec §8.2).
+	evictionLimit := cfg.MaxDBBytes
+	if cfg.MemoryCacheBytes > 0 {
+		evictionLimit = cfg.MemoryCacheBytes
+	}
+	evictor := cleanup.NewEvictor(st, evictionLimit, cfg.CleanupBatchSize, cfg.CleanupMaxRuns, cfg.SizeCleanupThrottle, logger, tel.Metrics)
 	backuper := cleanup.NewBackuper(st, cfg.BackupDir, cfg.BackupInterval, cfg.BackupRetention, logger, tel.Metrics)
+
+	// Trim a startup-loaded cache down to its budget before serving traffic.
+	if _, err := evictor.MaybeEvict(context.Background()); err != nil {
+		logger.Warn("startup eviction", "error", err)
+	}
 
 	handler := server.New(st, server.Options{
 		MaxBodyBytes:   cfg.MaxBodyBytes,
@@ -118,6 +129,7 @@ func run() error {
 		"public", cfg.Port,
 		"admin", cfg.MetricsPort,
 		"db", cfg.DBPath,
+		"memory_cache_bytes", cfg.MemoryCacheBytes,
 		"backup_dir", cfg.BackupDir)
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -10,9 +10,19 @@ import (
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "kvp.db"))
+	s, err := Open(filepath.Join(t.TempDir(), "kvp.db"), 0)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+func newCachedTestStore(t *testing.T, memLimit int64) *Store {
+	t.Helper()
+	s, err := Open(filepath.Join(t.TempDir(), "kvp.db"), memLimit)
+	if err != nil {
+		t.Fatalf("Open cached: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
@@ -549,7 +559,7 @@ func TestBackup(t *testing.T) {
 	}
 
 	// Backup file is a valid DB containing the row.
-	b, err := Open(path)
+	b, err := Open(path, 0)
 	if err != nil {
 		t.Fatalf("opening backup: %v", err)
 	}
@@ -567,5 +577,320 @@ func TestBackupRejectsEmptyDir(t *testing.T) {
 	s := newTestStore(t)
 	if _, err := s.Backup(context.Background(), ""); err == nil {
 		t.Error("Backup with empty dir: nil error, want error")
+	}
+}
+
+// --- in-memory layer (spec §4: memory-first reads, SQLite persistence) ---
+
+func TestCachedPutGetRoundTrip(t *testing.T) {
+	s := newCachedTestStore(t, 1<<20)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.now = fixed(now)
+
+	if err := s.Put(context.Background(), "foo", []byte("bar"), time.Hour); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	got, err := s.Get(context.Background(), "foo")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Found || got.Expired || !bytes.Equal(got.Value, []byte("bar")) {
+		t.Errorf("Get = %+v, want found bar", got)
+	}
+	if s.CacheBytes() != entrySize("foo", entry{value: []byte("bar")}) {
+		t.Errorf("CacheBytes = %d, want %d", s.CacheBytes(), entrySize("foo", entry{value: []byte("bar")}))
+	}
+}
+
+func TestCachedGetServesFromMemoryOnly(t *testing.T) {
+	s := newCachedTestStore(t, 1<<20)
+	ctx := context.Background()
+	if err := s.Put(ctx, "k", []byte("v"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	// Remove the persisted row behind the cache's back: memory is
+	// authoritative while the process runs, so the read must still succeed.
+	if _, err := s.db.Exec(`DELETE FROM kv_store WHERE key = 'k'`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Found || string(got.Value) != "v" {
+		t.Errorf("Get = %+v, want found v served from memory", got)
+	}
+}
+
+func TestCachedMissingKey(t *testing.T) {
+	s := newCachedTestStore(t, 1<<20)
+	got, err := s.Get(context.Background(), "nope")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Found {
+		t.Error("Get missing: Found = true, want false")
+	}
+}
+
+func TestCachedRestartPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kvp.db")
+	ctx := context.Background()
+
+	s1, err := Open(path, 1<<20)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s1.Put(ctx, "k", []byte("persisted"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := Open(path, 1<<20)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+	got, err := s2.Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("Get after restart: %v", err)
+	}
+	if !got.Found || !bytes.Equal(got.Value, []byte("persisted")) {
+		t.Errorf("Get after restart = %+v, want found persisted", got)
+	}
+}
+
+func TestCachedStartupLoadSkipsExpired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kvp.db")
+	ctx := context.Background()
+
+	s1, err := Open(path, 1<<20)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s1.Put(ctx, "dead", []byte("x"), time.Nanosecond); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Put(ctx, "alive", []byte("y"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond) // let "dead" lapse
+	if err := s1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := Open(path, 1<<20)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+
+	got, err := s2.Get(ctx, "alive")
+	if err != nil || !got.Found || string(got.Value) != "y" {
+		t.Errorf("Get alive = %+v err %v, want found y", got, err)
+	}
+	got, err = s2.Get(ctx, "dead")
+	if err != nil {
+		t.Fatalf("Get dead: %v", err)
+	}
+	if got.Found {
+		t.Error("expired row was loaded into the memory layer")
+	}
+}
+
+func TestCachedGetExpiredEvictsBothLayers(t *testing.T) {
+	s := newCachedTestStore(t, 1<<20)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.now = fixed(now)
+	ctx := context.Background()
+
+	if err := s.Put(ctx, "k", []byte("v"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	s.now = fixed(now.Add(2 * time.Hour))
+
+	got, err := s.Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Found || !got.Expired {
+		t.Errorf("Get expired = %+v, want found+expired", got)
+	}
+	if s.CacheBytes() != 0 {
+		t.Errorf("CacheBytes after lazy expire = %d, want 0", s.CacheBytes())
+	}
+
+	// The persisted row is removed asynchronously; wait for it.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rows, err := s.RowCount(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rows == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lazy DB delete did not run; RowCount = %d", rows)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestCachedConcurrentPutRefreshBeatsLazyExpire(t *testing.T) {
+	s := newCachedTestStore(t, 1<<20)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.now = fixed(now)
+	ctx := context.Background()
+
+	if err := s.Put(ctx, "k", []byte("old"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	s.now = fixed(now.Add(2 * time.Hour))
+	expired, err := s.Get(ctx, "k")
+	if err != nil || !expired.Expired {
+		t.Fatalf("Get expired = %+v err %v, want expired", expired, err)
+	}
+
+	// Refresh right after the lazy expire observed the stale entry: the
+	// refreshed row must survive in both layers.
+	if err := s.Put(ctx, "k", []byte("new"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond) // let the async stale delete fire
+
+	got, err := s.Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Found || string(got.Value) != "new" {
+		t.Errorf("Get after refresh = %+v, want found new", got)
+	}
+	rows, err := s.RowCount(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Errorf("RowCount after refresh = %d, want 1 (refreshed row survived)", rows)
+	}
+}
+
+func TestCachedDeleteExpiredPurgesMemory(t *testing.T) {
+	s := newCachedTestStore(t, 1<<20)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.now = fixed(now)
+	ctx := context.Background()
+
+	if err := s.Put(ctx, "a", []byte("v"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(ctx, "b", []byte("v"), 3*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	s.now = fixed(now.Add(2 * time.Hour))
+	deleted, err := s.DeleteExpired(ctx, 0)
+	if err != nil {
+		t.Fatalf("DeleteExpired: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("DeleteExpired deleted = %d, want 1", deleted)
+	}
+	if s.CacheBytes() == 0 {
+		t.Error("memory layer emptied entirely; only 'a' should have been purged")
+	}
+	got, err := s.Get(ctx, "b")
+	if err != nil || !got.Found {
+		t.Errorf("Get b = %+v err %v, want found", got, err)
+	}
+	got, err = s.Get(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Found {
+		t.Error("expired 'a' still resident in memory after sweep")
+	}
+}
+
+func TestCachedEvictOldestTrimsToBudget(t *testing.T) {
+	s := newCachedTestStore(t, 300) // fits ~3 entries of 99 bytes
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.now = fixed(now)
+	ctx := context.Background()
+
+	for i := 1; i <= 5; i++ {
+		key := "k" + string(rune('0'+i))
+		if err := s.Put(ctx, key, []byte("v"), time.Duration(i)*time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleted, err := s.EvictOldest(ctx, 300, 2, 10)
+	if err != nil {
+		t.Fatalf("EvictOldest: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("EvictOldest deleted = %d, want 2", deleted)
+	}
+	if usage, err := s.Usage(ctx); err != nil || usage >= 300 {
+		t.Errorf("Usage = %d err %v, want < 300 (cache budget)", usage, err)
+	}
+
+	// Oldest-expiring went first, from both layers.
+	for _, key := range []string{"k1", "k2"} {
+		got, err := s.Get(ctx, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Found {
+			t.Errorf("%s should have been evicted from memory", key)
+		}
+	}
+	for _, key := range []string{"k3", "k4", "k5"} {
+		got, err := s.Get(ctx, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Found {
+			t.Errorf("%s should have survived eviction", key)
+		}
+	}
+	rows, err := s.RowCount(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 3 {
+		t.Errorf("RowCount = %d, want 3 (both layers trimmed identically)", rows)
+	}
+}
+
+func TestSQLiteOnlyModeHasNoMemoryLayer(t *testing.T) {
+	s := newTestStore(t) // memLimit 0
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.now = fixed(now)
+	ctx := context.Background()
+
+	if err := s.Put(ctx, "k", []byte("v"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if s.CacheBytes() != 0 {
+		t.Errorf("CacheBytes = %d, want 0 in SQLite-only mode", s.CacheBytes())
+	}
+	usage, err := s.Usage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	size, err := s.Size(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage != size {
+		t.Errorf("Usage = %d, want on-disk size %d in SQLite-only mode", usage, size)
+	}
+	got, err := s.Get(ctx, "k")
+	if err != nil || !got.Found || string(got.Value) != "v" {
+		t.Errorf("Get = %+v err %v, want found v", got, err)
 	}
 }

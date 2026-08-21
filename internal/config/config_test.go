@@ -38,6 +38,10 @@ func TestDefaults(t *testing.T) {
 	if cfg.MaxDBBytes != 67108864 {
 		t.Errorf("MaxDBBytes = %d, want 67108864", cfg.MaxDBBytes)
 	}
+	// Unset KVP_MEMORY_CACHE_MB binds the memory layer to the DB budget.
+	if cfg.MemoryCacheBytes != 67108864 {
+		t.Errorf("MemoryCacheBytes = %d, want 67108864 (MaxDBBytes default)", cfg.MemoryCacheBytes)
+	}
 	if cfg.TTL != 24*time.Hour {
 		t.Errorf("TTL = %v, want 24h", cfg.TTL)
 	}
@@ -100,6 +104,7 @@ func TestCustomValues(t *testing.T) {
 		"KVP_MAX_BODY_BYTES":                "2048",
 		"KVP_MAX_KEY_BYTES":                 "64",
 		"KVP_MAX_DB_BYTES":                  "1024",
+		"KVP_MEMORY_CACHE_MB":               "512",
 		"KVP_TTL":                           "5m",
 		"KVP_CLEANUP_INTERVAL":              "10s",
 		"KVP_SIZE_CLEANUP_THROTTLE":         "15s",
@@ -143,6 +148,9 @@ func TestCustomValues(t *testing.T) {
 	}
 	if cfg.MaxDBBytes != 1024 {
 		t.Errorf("MaxDBBytes = %d", cfg.MaxDBBytes)
+	}
+	if cfg.MemoryCacheBytes != 512*1024*1024 {
+		t.Errorf("MemoryCacheBytes = %d, want %d", cfg.MemoryCacheBytes, 512*1024*1024)
 	}
 	if cfg.TTL != 5*time.Minute {
 		t.Errorf("TTL = %v", cfg.TTL)
@@ -222,6 +230,8 @@ func TestInvalidValueErrors(t *testing.T) {
 		{"zero body bytes", map[string]string{"KVP_MAX_BODY_BYTES": "0"}, "KVP_MAX_BODY_BYTES"},
 		{"bad key bytes", map[string]string{"KVP_MAX_KEY_BYTES": "-5"}, "KVP_MAX_KEY_BYTES"},
 		{"bad db bytes", map[string]string{"KVP_MAX_DB_BYTES": "x"}, "KVP_MAX_DB_BYTES"},
+		{"bad memory cache", map[string]string{"KVP_MEMORY_CACHE_MB": "abc"}, "KVP_MEMORY_CACHE_MB"},
+		{"negative memory cache", map[string]string{"KVP_MEMORY_CACHE_MB": "-1"}, "KVP_MEMORY_CACHE_MB"},
 		{"bad batch size", map[string]string{"KVP_CLEANUP_BATCH_SIZE": "0"}, "KVP_CLEANUP_BATCH_SIZE"},
 		{"bad max runs", map[string]string{"KVP_CLEANUP_MAX_RUNS": "-1"}, "KVP_CLEANUP_MAX_RUNS"},
 		{"bad rps", map[string]string{"KVP_RATE_LIMIT_RPS": "-1"}, "KVP_RATE_LIMIT_RPS"},
@@ -271,5 +281,25 @@ func TestSweepLimitNegativeRejected(t *testing.T) {
 	_, err := Parse(envMap(map[string]string{"KVP_CLEANUP_SWEEP_LIMIT": "-1"}))
 	if err == nil {
 		t.Fatal("Parse: nil error, want error for negative sweep limit")
+	}
+}
+
+func TestMemoryCacheZeroDisables(t *testing.T) {
+	cfg, err := Parse(envMap(map[string]string{"KVP_MEMORY_CACHE_MB": "0"}))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.MemoryCacheBytes != 0 {
+		t.Errorf("MemoryCacheBytes = %d, want 0 (SQLite-only mode)", cfg.MemoryCacheBytes)
+	}
+}
+
+func TestMemoryCacheUnsetFollowsDBBudget(t *testing.T) {
+	cfg, err := Parse(envMap(map[string]string{"KVP_MAX_DB_BYTES": "12345"}))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.MemoryCacheBytes != 12345 {
+		t.Errorf("MemoryCacheBytes = %d, want 12345 (KVP_MAX_DB_BYTES)", cfg.MemoryCacheBytes)
 	}
 }
