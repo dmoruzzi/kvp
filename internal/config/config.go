@@ -20,6 +20,8 @@ type Config struct {
 	MaxKeyBytes          int
 	MaxDBBytes           int64
 	MemoryCacheBytes     int64
+	CommitMode           string
+	FlushInterval        time.Duration
 	TTL                  time.Duration
 	CleanupInterval      time.Duration
 	SizeCleanupThrottle  time.Duration
@@ -56,6 +58,8 @@ func Parse(getenv func(string) string) (Config, error) {
 		MaxBodyBytes:         1048576,
 		MaxKeyBytes:          256,
 		MaxDBBytes:           67108864,
+		CommitMode:           "sync",
+		FlushInterval:        time.Second,
 		TTL:                  24 * time.Hour,
 		CleanupInterval:      time.Hour,
 		SizeCleanupThrottle:  time.Minute,
@@ -131,6 +135,18 @@ func Parse(getenv func(string) string) (Config, error) {
 		if v != "" {
 			memCacheMB, err = parseNonNegativeInt64(v)
 			memCacheSet = true
+		}
+		return err
+	})
+	assign("KVP_COMMIT_MODE", func(v string) error {
+		if v != "" {
+			cfg.CommitMode = strings.ToLower(v)
+		}
+		return validateCommitMode(cfg.CommitMode)
+	})
+	assign("KVP_FLUSH_INTERVAL", func(v string) error {
+		if v != "" {
+			cfg.FlushInterval, err = parsePositiveDuration(v)
 		}
 		return err
 	})
@@ -338,6 +354,14 @@ func parsePositiveDuration(v string) (time.Duration, error) {
 		return 0, fmt.Errorf("must be > 0, got %v", v)
 	}
 	return d, nil
+}
+
+func validateCommitMode(v string) error {
+	switch v {
+	case "sync", "async", "memory":
+		return nil
+	}
+	return fmt.Errorf("invalid commit mode %q (want sync|async|memory)", v)
 }
 
 func validateLogLevel(v string) error {

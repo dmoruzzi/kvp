@@ -230,6 +230,8 @@ type Metrics struct {
 	dbRows         metric.Int64Gauge
 	keysStored     metric.Int64Counter
 	keysExpired    metric.Int64Counter
+	dirtyEntries   metric.Int64Gauge
+	flushRuns      metric.Int64Counter
 	cleanupRuns    metric.Int64Counter
 	cleanupDeleted metric.Int64Counter
 	httpErrors     metric.Int64Counter
@@ -263,6 +265,12 @@ func newMetrics(m metric.Meter) (*Metrics, error) {
 		return nil, err
 	}
 	if mk.keysExpired, err = m.Int64Counter("kvp_keys_expired_total"); err != nil {
+		return nil, err
+	}
+	if mk.dirtyEntries, err = m.Int64Gauge("kvp_dirty_entries"); err != nil {
+		return nil, err
+	}
+	if mk.flushRuns, err = m.Int64Counter("kvp_flush_runs_total"); err != nil {
 		return nil, err
 	}
 	if mk.cleanupRuns, err = m.Int64Counter("kvp_cleanup_runs_total"); err != nil {
@@ -303,8 +311,19 @@ func (m *Metrics) DBQuery(operation string, d time.Duration) {
 	m.dbQuery.Record(mctx, d.Seconds(), metric.WithAttributes(attrs("operation", operation)...))
 }
 
-func (m *Metrics) KeyStored()  { m.keysStored.Add(mctx, 1) }
+// KeyStored counts a successful write; mode is the effective commit mode
+// (sync, async, memory — §10.2).
+func (m *Metrics) KeyStored(mode string) {
+	m.keysStored.Add(mctx, 1, metric.WithAttributes(attrs("mode", mode)...))
+}
 func (m *Metrics) KeyExpired() { m.keysExpired.Add(mctx, 1) }
+
+// FlushRun meters the async flush job (§8.5); SetDirtyEntries samples the
+// pending-flush gauge on every flush tick.
+func (m *Metrics) FlushRun(result string) {
+	m.flushRuns.Add(mctx, 1, metric.WithAttributes(attrs("result", result)...))
+}
+func (m *Metrics) SetDirtyEntries(n int64) { m.dirtyEntries.Record(mctx, n) }
 
 func (m *Metrics) Error(route, path, status string) {
 	m.httpErrors.Add(mctx, 1, metric.WithAttributes(attrs("route", route, "path", path, "status", status)...))

@@ -25,12 +25,15 @@ func TestMetricsGoldenNames(t *testing.T) {
 	m.RequestInFlight("GET", "index", "/", 1)
 	m.RequestInFlight("GET", "index", "/", -1)
 	m.DBQuery("get", 2*time.Millisecond)
-	m.KeyStored()
+	m.KeyStored("sync")
+	m.KeyStored("async")
 	m.KeyExpired()
 	m.Error("kvp", "/some-key", "404")
 	m.CleanupRun("expiry", "ok")
 	m.CleanupRun("size", "error")
 	m.CleanupDeleted("size", 7)
+	m.FlushRun("ok")
+	m.SetDirtyEntries(3)
 	m.SetDBSize(1234)
 	m.SetDBRows(42)
 
@@ -50,6 +53,8 @@ func TestMetricsGoldenNames(t *testing.T) {
 		"kvp_db_rows",
 		"kvp_keys_stored_total",
 		"kvp_keys_expired_total",
+		"kvp_dirty_entries",
+		"kvp_flush_runs_total",
 		"kvp_cleanup_runs_total",
 		"kvp_cleanup_deleted_keys_total",
 		"kvp_http_errors_total",
@@ -63,6 +68,10 @@ func TestMetricsGoldenNames(t *testing.T) {
 	// The raw key path is present as a label (product requirement).
 	if !strings.Contains(out, `path="/some-key"`) {
 		t.Errorf("raw key path label missing; output:\n%s", out)
+	}
+	// Writes carry the effective commit mode label (§10.2).
+	if !strings.Contains(out, `mode="sync"`) || !strings.Contains(out, `mode="async"`) {
+		t.Errorf("commit mode label missing; output:\n%s", out)
 	}
 	// Cleanup runs carry kind and result labels (Prometheus sorts labels
 	// alphabetically: kind, result).

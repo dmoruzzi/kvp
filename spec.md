@@ -89,8 +89,9 @@ CREATE INDEX IF NOT EXISTS idx_kv_store_expires_at ON kv_store(expires_at);
 - **expires_at**: set to `now + KVP_TTL` (default 24h). TTL is server-configurable, not client-configurable. (v1 had an internal inconsistency: §2 said 24h, §3 said 1h — now a single config knob.)
 - **Index**: `idx_kv_store_expires_at` backs the expiry sweep and oldest-first eviction; without it both jobs degrade to full scans.
 - **WAL mode** allows concurrent readers with the writer; `busy_timeout` prevents immediate `SQLITE_BUSY`.
+- **`synchronous=NORMAL`**: WAL commits are process-crash durable but may lose the most recent commits on OS crash/power loss. `sync` commit mode (§5.2) therefore promises SQLite-commit durability, not fsync-per-write.
 - **`auto_vacuum=INCREMENTAL`**: deleted space stays in the file until `PRAGMA incremental_vacuum(N)` is run by the maintenance job (§8.4), avoiding unbounded file growth.
-- **Memory layer**: unless `KVP_MEMORY_CACHE_MB=0`, all live keys are held in memory and reads never touch SQLite — memory is authoritative while the process runs, SQLite is the durable mirror across restarts. Writes hit SQLite first and are mirrored into memory; expiry sweeps and size evictions remove from both layers. When the memory budget is exceeded, oldest-expiring entries are evicted from both layers (§8.2).
+- **Memory layer**: unless `KVP_MEMORY_CACHE_MB=0`, all live keys are held in memory and reads never touch SQLite — memory is authoritative while the process runs, SQLite is the durable mirror across restarts. Writes hit SQLite first and are mirrored into memory; expiry sweeps and size evictions remove from both layers. When the memory budget is exceeded, oldest-expiring entries are evicted from both layers (§8.2). Per-request commit modes (§5.2) can weaken the write path — `async` defers persistence, `memory` skips it entirely — so eviction must also account for entries that exist only in memory (§8.2).
 
 ## 5. HTTP API
 
@@ -113,9 +114,25 @@ Empty key → `400 {"error":"key required"}`.
 ### 5.2 `POST /<key>`
 
 1. Body read with `http.MaxBytesReader` limit `KVP_MAX_BODY_BYTES` → `413 {"error":"payload too large"}` if exceeded.
-2. Upsert: `INSERT INTO kv_store(key, value, expires_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, expires_at=excluded.expires_at`.
-3. Trigger async size-based eviction (§8.2).
-4. Respond `201 Created`, body `stored` (text/plain; kept for v1 compatibility).
+2. Resolve commit mode from the `X-Commit-Mode` header (case-insensitive): `sync`, `async`, `memory`. Unset → the server default `KVP_COMMIT_MODE` (default `sync`). Any other value → `400 {"error":"invalid X-Commit-Mode"}`. The header is honored on `POST` only and ignored on other methods. `async`/`memory` require the memory layer (`KVP_MEMORY_CACHE_MB` ≠ `0`); if it is disabled the write is downgraded to `sync` and the response carries `X-Commit-Mode-Warning: memory-cache-disabled`.
+3. Upsert per mode (`expires_at` is always `now + KVP_TTL`):
+   - **sync** (default): SQLite upsert first (`INSERT INTO kv_store(key, value, expires_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, expires_at=excluded.expires_at`), mirror into memory on success; clears any pending dirty flag for the key.
+   - **async**: memory write + mark the key dirty; SQLite is untouched by the request. The flush job (§8.5) persists the latest value per dirty key, so bursts to one key coalesce.
+   - **memory**: memory write only, never persisted; clears any pending dirty flag — the client's latest intent wins over the flusher.
+4. Trigger async size-based eviction (§8.2).
+5. Respond per the effective mode:
+
+| Effective mode | Status | Body | Response headers |
+|---|---|---|---|
+| `sync` | `201 Created` | `stored` (text/plain; kept for v1 compatibility) | `X-Commit-Mode: sync` |
+| `async` | `202 Accepted` | `accepted` (text/plain) | `X-Commit-Mode: async` |
+| `memory` | `201 Created` | `stored` (text/plain) | `X-Commit-Mode: memory` |
+
+When a downgrade occurred, `X-Commit-Mode-Warning: memory-cache-disabled` is added. The echoed mode is the durability contract: only `sync` promises the value survives a restart (process-crash durable; see §4 `synchronous=NORMAL`).
+
+Semantics:
+- A `memory` write **shadows** the durable value: the persisted copy of the key is neither updated nor removed, so after a restart the last *persisted* value is served. Accepted trade-off; no tombstones.
+- Dirty entries that expire or are evicted before the flush are dropped; the flusher skips keys no longer in memory.
 
 ### 5.3 `GET /<key>`
 
@@ -129,8 +146,9 @@ Empty key → `400 {"error":"key required"}`.
 | Code | Meaning |
 |---|---|
 | `200` | Value retrieved |
-| `201` | Value stored |
-| `400` | Key missing / invalid (also `413` for oversize body) |
+| `201` | Value stored (`sync` / `memory` commit mode) |
+| `202` | Value stored async — memory written, persistence deferred (§5.2) |
+| `400` | Key missing / invalid, or invalid `X-Commit-Mode` (also `413` for oversize body) |
 | `401` | Missing/mismatched API key (when auth enabled) |
 | `404` | Key not found / key expired |
 | `405` | Method not allowed (with `Allow` header) |
@@ -183,6 +201,7 @@ Fixed algorithm — **never deletes the whole table** (v1 bug #1):
    Oldest-expiring rows are evicted first; each batch is a bounded statement, so a run cannot wipe the table.
 3. Stop when size < limit, a batch affects 0 rows, or `KVP_CLEANUP_MAX_RUNS` (default 64) batches executed (bounds run latency).
 4. Throttled to once per `KVP_SIZE_CLEANUP_THROTTLE` (default 1m) via a singleflight-style guard; serialized with other writers by a `sync.Mutex` (v1 `cleanupMu`).
+5. **Memory-only entries**: entries written in `memory` mode (§5.2) and async writes not yet flushed never reach SQLite, so the victim query above cannot select them. In cached mode the eviction therefore also purges oldest-expiring entries directly from the memory layer until the budget is met; such entries are not persisted first (eviction is lossy by design).
 
 ### 8.3 On-read lazy delete
 
@@ -193,11 +212,21 @@ Fixed algorithm — **never deletes the whole table** (v1 bug #1):
 - After a size eviction run, `PRAGMA incremental_vacuum(KVP_CLEANUP_BATCH_SIZE)` reclaims freed pages.
 - Backup job every `KVP_BACKUP_INTERVAL` (default 24h): `VACUUM INTO 'KVP_BACKUP_DIR/kvp-<timestamp>.db'` (works with CGO-free `modernc.org/sqlite`). Retention: keep newest `KVP_BACKUP_RETENTION` (default 7) files, delete the rest. Failures are logged and metered.
 
+### 8.5 Async flush (background)
+
+Async writes (§5.2) go to the memory layer and mark their key dirty; persistence is deferred to this job so hot keys coalesce (only the latest value ever needs writing).
+
+- Every `KVP_FLUSH_INTERVAL` (default `1s`) the flusher snapshots the dirty set, reads the current memory value for each key, and upserts them into SQLite in batched transactions. Keys no longer in memory are skipped (purged or overwritten).
+- The dirty flag is cleared when the value is read for flushing; a write racing the flush re-marks the key, so the next run persists the latest value.
+- Entries flushed late with an already-past `expires_at` are removed by the expiry sweep; eviction may drop dirty entries before they are persisted.
+- The flusher shares the root context and never silently fails: errors are logged, metered (`kvp_flush_runs_total{result="error"}`), and affected keys stay dirty for retry.
+- **Flush on shutdown**: graceful shutdown runs one final flush before the DB is closed — unpersisted async values survive a clean restart; only a crash loses them (bounded by the flush interval).
+
 ## 9. Concurrency Model
 
 - `net/http` stdlib servers; shared `*sql.DB` (safe for concurrent use), WAL mode + `busy_timeout`.
 - One `sync.Mutex` guards size eviction runs (not row writes).
-- Jobs (expiry, size, vacuum/backup) run concurrently with handlers under a cancellable root context.
+- Jobs (expiry, size, vacuum/backup, async flush §8.5) run concurrently with handlers under a cancellable root context.
 - All shared state (rate-limiter buckets, last-run timestamps) is mutex-protected; no package-level mutable vars (v1 kept `lastCleanup`/`apiKey` at package scope).
 
 ## 10. Observability
@@ -233,10 +262,12 @@ Instrumented via OTel meters; no direct Prom client calls. Primary path: OTel SD
 | `kvp_db_query_duration_seconds` | Histogram | `operation` (`get`, `put`, `delete_expired`, …) | DB call latency. |
 | `kvp_db_size_bytes` | Gauge | — | On-disk DB file size. |
 | `kvp_db_rows` | Gauge | — | `COUNT(*)` sampled on the maintenance tick. |
-| `kvp_keys_stored_total` | Counter | — | Successful writes (logical writes, not evictions). |
+| `kvp_keys_stored_total` | Counter | `mode` (`sync`, `async`, `memory`) | Successful writes (logical writes, not evictions). |
 | `kvp_keys_expired_total` | Counter | — | Expired rows deleted (sweep + lazy delete). |
 | `kvp_cleanup_runs_total` | Counter | `kind` (`expiry`, `size`, `vacuum`, `backup`), `result` (`ok`, `error`) | Job runs. |
 | `kvp_cleanup_deleted_keys_total` | Counter | `kind` | Keys evicted/deleted per job. |
+| `kvp_dirty_entries` | Gauge | — | Async writes pending flush (§8.5). |
+| `kvp_flush_runs_total` | Counter | `result` (`ok`, `error`) | Async flush job runs (§8.5). |
 | `kvp_http_errors_total` | Counter | `route`, `status` | 4xx/5xx count (drives the error-rate alert). |
 
 Runtime metrics: `process_*`/`go_*` (GOMAXPROCS, goroutines, GC) auto-registered by the exporter. Use RED for API health (Rate/Errors/Duration above) and USE for resources (SQLite file size, connections via `db.Stats` → `kvp_db_size_bytes` and a `kvp_sql_connections` gauge if desired).
@@ -248,6 +279,7 @@ Runtime metrics: `process_*`/`go_*` (GOMAXPROCS, goroutines, GC) auto-registered
   - `kvp.http` — per request (from `otelhttp`), carrying `request_id` as attribute.
   - `kvp.db.query` — per DB operation, with `operation` attribute.
   - `kvp.cleanup.*` — one span per job run, with deleted-count attributes.
+   - `kvp.flush` — one span per async flush run (§8.5), with dirty and persisted counts.
 - Context propagation: W3C `traceparent` honored on inbound requests; `X-Request-ID` is attached as a span attribute so HTTP and traces correlate even when the caller doesn't propagate traces.
 
 ### 10.4 Health checks
@@ -282,6 +314,7 @@ Dashboards and alert rules are provisioned with Terraform in `terraform/` (Terra
 | High latency | `histogram_quantile(0.95, sum(rate(kvp_http_request_duration_seconds_bucket[5m])) by (le)) > 1` | warning |
 | DB near limit | `kvp_db_size_bytes > KVP_MAX_DB_BYTES * 0.9` | warning |
 | Cleanup failures | `rate(kvp_cleanup_runs_total{result="error"}[5m]) > 0` | critical |
+| Async flush failures | `rate(kvp_flush_runs_total{result="error"}[5m]) > 0` | critical |
 | Instance down | `absent(up{job="kvp"})` | critical |
 
 Dashboard panels: RPS by route/status, latency p50/p95/p99, error rates, DB size vs limit, rows over time, cleanup runs/deleted keys, Go runtime. Terraform `plan`/`apply` runs in CI (see §13.1).
@@ -315,6 +348,8 @@ All config via environment variables, parsed/validated in `internal/config` (fai
 | `KVP_MAX_KEY_BYTES` | `256` | Max key length |
 | `KVP_MAX_DB_BYTES` | `67108864` (64 MiB) | Size-eviction threshold |
 | `KVP_MEMORY_CACHE_MB` | *(unset: follows `KVP_MAX_DB_BYTES`)* | In-memory store budget (MiB). Unset → bound to the DB size budget; `0` → SQLite-only mode (no memory layer); `N` → cap at N MiB |
+| `KVP_COMMIT_MODE` | `sync` | Default commit mode when `X-Commit-Mode` is absent: `sync`, `async`, `memory` (§5.2) |
+| `KVP_FLUSH_INTERVAL` | `1s` | Async write-behind flush cadence (§8.5); the crash-loss window for `async` writes |
 | `KVP_TTL` | `24h` | Value lifetime (Go duration) |
 | `KVP_CLEANUP_INTERVAL` | `1h` | Expiry sweep period |
 | `KVP_SIZE_CLEANUP_THROTTLE` | `1m` | Min interval between size evictions |
@@ -386,6 +421,7 @@ Default `docker compose up -d` runs app + tunnel + collector. There is **no self
 | Unit — server | Handler tests with `httptest`: routing, status codes, body limit → 413, rate limit → 429, auth pass/fail, constant-time path. |
 | Unit — store | Temp-file SQLite: upsert/retrieve/expiry, lazy delete, eviction ordering. |
 | Unit — cleanup | Size eviction with a small `KVP_MAX_DB_BYTES`: asserts bounded batches, oldest-first order, stop conditions, and that the table is **never fully emptied** (regression test for v1 bug #1). |
+| Unit — commit modes | `X-Commit-Mode`: unknown value → 400; `async` → 202, read served from memory, flush persists the latest value (coalescing), flush on shutdown; `memory` → never persisted, last persisted value resurfaces after reload; `async`/`memory` with the memory layer disabled → sync downgrade + `X-Commit-Mode-Warning`; `sync`/`memory` clear dirty state; eviction purges memory-only entries (§8.2). |
 | Integration | Compose smoke test: post/get/expire cycle, `/healthz`+`/readyz`, `/metrics` returns Prometheus text and contains `kvp_http_requests_total`, and the collector receives OTLP for all three signals (assert against its debug/file exporter). |
 | Observability checks | Every metric that must exist is listed and asserted in a golden metrics test; logs are valid JSON; the `path` label carries the raw key as expected, and no metric or log carries a **value** or the API key. |
 

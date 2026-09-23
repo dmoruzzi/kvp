@@ -85,6 +85,7 @@ func run(sigCtx context.Context) error {
 	}
 	evictor := cleanup.NewEvictor(st, evictionLimit, cfg.CleanupBatchSize, cfg.CleanupMaxRuns, cfg.SizeCleanupThrottle, logger, tel.Metrics)
 	backuper := cleanup.NewBackuper(st, cfg.BackupDir, cfg.BackupInterval, cfg.BackupRetention, logger, tel.Metrics)
+	flusher := cleanup.NewFlusher(st, cfg.FlushInterval, logger, tel.Metrics)
 
 	// Trim a startup-loaded cache down to its budget before serving traffic.
 	if _, err := evictor.MaybeEvict(context.Background()); err != nil {
@@ -132,6 +133,7 @@ func run(sigCtx context.Context) error {
 	go expiry.Run(jobCtx)
 	go evictor.RunLoop(jobCtx)
 	go backuper.Run(jobCtx)
+	go flusher.Run(jobCtx)
 	go sampleDBGauges(jobCtx, cfg.CleanupInterval, logger, st, tel.Metrics)
 
 	errCh := make(chan error, 2)
@@ -163,6 +165,15 @@ func run(sigCtx context.Context) error {
 		logger.Warn("admin server shutdown", "error", err)
 	}
 	stopJobs()
+
+	// Final flush of async-dirty keys before the DB closes (§8.5): in-flight
+	// writes finished with the servers, so this is the last chance to persist
+	// them on a clean shutdown.
+	if n, err := st.Flush(shutdownCtx); err != nil {
+		logger.Warn("shutdown flush incomplete", "persisted", n, "error", err)
+	} else if n > 0 {
+		logger.Info("shutdown flush", "persisted", n)
+	}
 
 	if err := tel.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("telemetry shutdown", "error", err)

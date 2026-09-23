@@ -41,6 +41,25 @@ func newTestServer(t *testing.T, o Options) (http.Handler, *store.Store) {
 	return h, st
 }
 
+// newTestServerCached builds a handler over a store with the memory layer
+// enabled — required to exercise the async/memory commit modes (§5.2).
+func newTestServerCached(t *testing.T, o Options) (http.Handler, *store.Store) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "kvp.db"), 1<<20)
+	if err != nil {
+		t.Fatalf("store.Open cached: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if o.UI == nil {
+		o.UI = testIndexFS
+	}
+	if o.Logger == nil {
+		o.Logger = slog.New(slog.NewTextHandler(discard{}, nil))
+	}
+	h := newServer(st, o).handler()
+	return h, st
+}
+
 type discard struct{}
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
@@ -469,8 +488,8 @@ func (m *recordingMetrics) Request(method, route, path, status string) {
 	m.requests = append(m.requests, reqEvent{method, route, path, status})
 }
 func (m *recordingMetrics) RequestDuration(string, string, string, time.Duration) {}
-func (m *recordingMetrics) RequestInFlight(string, string, string, int)          {}
+func (m *recordingMetrics) RequestInFlight(string, string, string, int)           {}
 func (m *recordingMetrics) DBQuery(string, time.Duration)                         {}
-func (m *recordingMetrics) KeyStored()                                            {}
+func (m *recordingMetrics) KeyStored(string)                                      {}
 func (m *recordingMetrics) KeyExpired()                                           {}
 func (m *recordingMetrics) Error(string, string, string)                          {}

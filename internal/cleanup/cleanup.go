@@ -16,12 +16,16 @@ import (
 type Metrics interface {
 	CleanupRun(kind, result string)
 	CleanupDeleted(kind string, n int64)
+	FlushRun(result string)
+	SetDirtyEntries(n int64)
 }
 
 type noopMetrics struct{}
 
 func (noopMetrics) CleanupRun(string, string)    {}
 func (noopMetrics) CleanupDeleted(string, int64) {}
+func (noopMetrics) FlushRun(string)              {}
+func (noopMetrics) SetDirtyEntries(int64)        {}
 
 // Store is the persistence surface the jobs need. *store.Store satisfies it.
 type Store interface {
@@ -30,6 +34,10 @@ type Store interface {
 	// Usage reports the footprint the size budget applies to: cache bytes when
 	// the memory layer is enabled, otherwise the on-disk database size.
 	Usage(ctx context.Context) (int64, error)
+	// Flush persists async-dirty keys into SQLite (§8.5); DirtyCount reports
+	// the pending-flush gauge sample.
+	Flush(ctx context.Context) (int64, error)
+	DirtyCount() int
 	IncrementalVacuum(ctx context.Context, n int) error
 	Backup(ctx context.Context, dir string) (string, error)
 	RetainBackups(dir string, n int) (int, error)
@@ -186,6 +194,59 @@ func (e *Evictor) RunLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			_, _ = e.MaybeEvict(ctx)
+		}
+	}
+}
+
+// Flusher persists async-dirty keys on a fixed cadence (§8.5). Every tick
+// samples the dirty gauge; runs with work (or errors) are metered and logged
+// so the 1s default cadence does not flood OTLP with no-op samples.
+type Flusher struct {
+	st       Store
+	interval time.Duration
+	logger   *slog.Logger
+	metrics  Metrics
+}
+
+func NewFlusher(st Store, interval time.Duration, logger *slog.Logger, m Metrics) *Flusher {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if m == nil {
+		m = noopMetrics{}
+	}
+	return &Flusher{st: st, interval: interval, logger: logger, metrics: m}
+}
+
+// RunOnce performs one flush pass and returns the persisted count.
+func (f *Flusher) RunOnce(ctx context.Context) (int64, error) {
+	start := time.Now()
+	n, err := f.st.Flush(ctx)
+	f.metrics.SetDirtyEntries(int64(f.st.DirtyCount()))
+	if err != nil {
+		f.metrics.FlushRun("error")
+		f.logger.Error("async flush failed", "error", err, "persisted", n)
+		return n, err
+	}
+	if n > 0 {
+		f.metrics.FlushRun("ok")
+		f.logger.Info("async flush", "persisted", n, "duration_ms", time.Since(start).Milliseconds())
+	}
+	return n, nil
+}
+
+// Run loops the flush until the context is cancelled, running once immediately.
+// Shutdown performs a final flush outside this loop (spec §8.5).
+func (f *Flusher) Run(ctx context.Context) {
+	_, _ = f.RunOnce(ctx)
+	ticker := time.NewTicker(f.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, _ = f.RunOnce(ctx)
 		}
 	}
 }

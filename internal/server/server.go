@@ -23,6 +23,9 @@ type Options struct {
 	MaxKeyBytes    int
 	TTL            time.Duration
 	APIKey         string
+	// CommitMode is the default commit mode (§5.2) applied when a POST omits
+	// the X-Commit-Mode header: sync, async, or memory.
+	CommitMode     string
 	RateLimitRPS   float64
 	RateLimitBurst int
 	TrustedProxies []netip.Prefix
@@ -42,6 +45,8 @@ type Server struct {
 	store *store.Store
 	opts  Options
 	rl    *rateLimiter
+	// defaultMode is the parsed Options.CommitMode.
+	defaultMode store.PutMode
 }
 
 func newServer(st *store.Store, o Options) *Server {
@@ -66,10 +71,15 @@ func newServer(st *store.Store, o Options) *Server {
 	if o.Metrics == nil {
 		o.Metrics = noopMetrics{}
 	}
+	defaultMode := store.PutSync
+	if v, ok := store.ParsePutMode(o.CommitMode); ok {
+		defaultMode = v
+	}
 	return &Server{
-		store: st,
-		opts:  o,
-		rl:    newRateLimiter(o.RateLimitRPS, o.RateLimitBurst),
+		store:       st,
+		opts:        o,
+		rl:          newRateLimiter(o.RateLimitRPS, o.RateLimitBurst),
+		defaultMode: defaultMode,
 	}
 }
 
@@ -191,19 +201,46 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request, key string) {
 		return
 	}
 
+	// Commit mode resolution (§5.2): header value wins over the server
+	// default; unknown values are rejected; async/memory degrade to sync when
+	// the memory layer is disabled, with a warning header on the response.
+	mode := s.defaultMode
+	if v := r.Header.Get("X-Commit-Mode"); v != "" {
+		parsed, ok := store.ParsePutMode(v)
+		if !ok {
+			s.writeError(w, http.StatusBadRequest, "invalid X-Commit-Mode")
+			return
+		}
+		mode = parsed
+	}
+	downgraded := mode != store.PutSync && !s.store.Caching()
+	if downgraded {
+		mode = store.PutSync
+	}
+
 	start := time.Now()
-	err = s.store.Put(r.Context(), key, body, s.opts.TTL)
+	err = s.store.PutWithMode(r.Context(), key, body, s.opts.TTL, mode)
 	s.opts.Metrics.DBQuery("put", time.Since(start))
 	if err != nil {
 		s.internalError(w, r, "put", err)
 		return
 	}
-	s.opts.Metrics.KeyStored()
+	s.opts.Metrics.KeyStored(mode.String())
 
 	if s.opts.AfterWrite != nil {
 		go s.opts.AfterWrite()
 	}
 
+	w.Header().Set("X-Commit-Mode", mode.String())
+	if downgraded {
+		w.Header().Set("X-Commit-Mode-Warning", "memory-cache-disabled")
+	}
+	if mode == store.PutAsync {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("accepted"))
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusCreated)
 	_, _ = w.Write([]byte("stored"))

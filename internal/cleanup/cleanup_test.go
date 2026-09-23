@@ -68,6 +68,14 @@ func (r *recording) had(kind, result string) bool {
 	return false
 }
 
+func (r *recording) FlushRun(result string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runs = append(r.runs, runEvent{"flush", result})
+}
+
+func (r *recording) SetDirtyEntries(int64) {}
+
 type stubStore struct{}
 
 func (stubStore) DeleteExpired(context.Context, int) (int64, error)  { return 0, nil }
@@ -75,6 +83,8 @@ func (stubStore) EvictOldest(context.Context, int64, int, int) (int64, error) {
 	return 0, nil
 }
 func (stubStore) Usage(context.Context) (int64, error)    { return 0, nil }
+func (stubStore) Flush(context.Context) (int64, error)    { return 0, nil }
+func (stubStore) DirtyCount() int                         { return 0 }
 func (stubStore) IncrementalVacuum(context.Context, int) error { return nil }
 func (stubStore) Backup(context.Context, string) (string, error) { return "", nil }
 func (stubStore) RetainBackups(string, int) (int, error)  { return 0, nil }

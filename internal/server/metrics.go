@@ -11,17 +11,19 @@ type Metrics interface {
 	RequestDuration(method, route, path string, d time.Duration)
 	RequestInFlight(method, route, path string, delta int)
 	DBQuery(operation string, d time.Duration)
-	KeyStored()
+	// KeyStored counts a successful write; mode is the effective commit mode
+	// (sync, async, memory — §5.2, §10.2).
+	KeyStored(mode string)
 	KeyExpired()
 	Error(route, path, status string)
 }
 
 type noopMetrics struct{}
 
-func (noopMetrics) Request(string, string, string, string)        {}
-func (noopMetrics) RequestDuration(string, string, string, time.Duration) {}
-func (noopMetrics) RequestInFlight(string, string, string, int)   {}
-func (noopMetrics) DBQuery(string, time.Duration)                 {}
-func (noopMetrics) KeyStored()                                    {}
-func (noopMetrics) KeyExpired()                                   {}
-func (noopMetrics) Error(string, string, string)                  {}
+func (noopMetrics) Request(string, string, string, string)                 {}
+func (noopMetrics) RequestDuration(string, string, string, time.Duration)  {}
+func (noopMetrics) RequestInFlight(string, string, string, int)            {}
+func (noopMetrics) DBQuery(string, time.Duration)                          {}
+func (noopMetrics) KeyStored(string)                                       {}
+func (noopMetrics) KeyExpired()                                            {}
+func (noopMetrics) Error(string, string, string)                           {}

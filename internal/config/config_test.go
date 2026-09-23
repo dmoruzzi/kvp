@@ -243,6 +243,9 @@ func TestInvalidValueErrors(t *testing.T) {
 		{"bad proxies", map[string]string{"KVP_TRUSTED_PROXIES": "999.1.1.1/33"}, "KVP_TRUSTED_PROXIES"},
 		{"bad backup interval", map[string]string{"KVP_BACKUP_INTERVAL": "x"}, "KVP_BACKUP_INTERVAL"},
 		{"bad backup retention", map[string]string{"KVP_BACKUP_RETENTION": "0"}, "KVP_BACKUP_RETENTION"},
+		{"bad commit mode", map[string]string{"KVP_COMMIT_MODE": "instant"}, "KVP_COMMIT_MODE"},
+		{"bad flush interval", map[string]string{"KVP_FLUSH_INTERVAL": "0s"}, "KVP_FLUSH_INTERVAL"},
+		{"bad flush interval value", map[string]string{"KVP_FLUSH_INTERVAL": "soon"}, "KVP_FLUSH_INTERVAL"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -301,5 +304,41 @@ func TestMemoryCacheUnsetFollowsDBBudget(t *testing.T) {
 	}
 	if cfg.MemoryCacheBytes != 12345 {
 		t.Errorf("MemoryCacheBytes = %d, want 12345 (KVP_MAX_DB_BYTES)", cfg.MemoryCacheBytes)
+	}
+}
+
+func TestCommitModeDefaultsToSync(t *testing.T) {
+	cfg, err := Parse(envNone)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.CommitMode != "sync" {
+		t.Errorf("CommitMode = %q, want sync", cfg.CommitMode)
+	}
+	if cfg.FlushInterval != time.Second {
+		t.Errorf("FlushInterval = %v, want 1s", cfg.FlushInterval)
+	}
+}
+
+func TestCommitModeParsed(t *testing.T) {
+	for _, v := range []string{"async", "memory", "ASYNC", "Memory", "Sync"} {
+		cfg, err := Parse(envMap(map[string]string{"KVP_COMMIT_MODE": v}))
+		if err != nil {
+			t.Fatalf("Parse(%s): %v", v, err)
+		}
+		want := strings.ToLower(v)
+		if cfg.CommitMode != want {
+			t.Errorf("CommitMode = %q, want %q (case-insensitive)", cfg.CommitMode, want)
+		}
+	}
+}
+
+func TestFlushIntervalParsed(t *testing.T) {
+	cfg, err := Parse(envMap(map[string]string{"KVP_FLUSH_INTERVAL": "250ms"}))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.FlushInterval != 250*time.Millisecond {
+		t.Errorf("FlushInterval = %v, want 250ms", cfg.FlushInterval)
 	}
 }

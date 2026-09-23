@@ -30,12 +30,61 @@ const (
 	// maxDeleteParams bounds the placeholders per DELETE IN statement
 	// (SQLite's default host-parameter limit is 999).
 	maxDeleteParams = 500
+
+	// flushBatchSize bounds the statements per flush transaction (§8.5).
+	flushBatchSize = 500
 )
 
-// entry is a value resident in the memory layer.
+// PutMode selects the durability of a write (spec §5.2).
+type PutMode int
+
+const (
+	// PutSync persists to SQLite before returning: the value survives a
+	// process restart (crash-durable per the synchronous=NORMAL note in §4).
+	PutSync PutMode = iota
+	// PutAsync writes to the memory layer only and marks the key dirty; the
+	// background flush (§8.5) persists the latest value later.
+	PutAsync
+	// PutMemory writes to the memory layer only and is never persisted.
+	PutMemory
+)
+
+func (m PutMode) String() string {
+	switch m {
+	case PutAsync:
+		return "async"
+	case PutMemory:
+		return "memory"
+	default:
+		return "sync"
+	}
+}
+
+// ParsePutMode maps a commit-mode string (case-insensitive, per the
+// X-Commit-Mode header) to a PutMode. ok is false for unknown values.
+func ParsePutMode(v string) (mode PutMode, ok bool) {
+	switch strings.ToLower(v) {
+	case "sync":
+		return PutSync, true
+	case "async":
+		return PutAsync, true
+	case "memory":
+		return PutMemory, true
+	}
+	return PutSync, false
+}
+
+const upsertSQL = `
+INSERT INTO kv_store (key, value, expires_at) VALUES (?, ?, ?)
+ON CONFLICT(key) DO UPDATE SET value=excluded.value, expires_at=excluded.expires_at`
+
+// entry is a value resident in the memory layer. volatile marks entries whose
+// authoritative copy lives only in memory: memory-mode writes are never
+// persisted and async writes are not persisted until the flush commits them.
 type entry struct {
 	value     []byte
 	expiresAt time.Time
+	volatile  bool
 }
 
 func entrySize(key string, e entry) int64 {
@@ -56,6 +105,7 @@ type Store struct {
 	cache      map[string]entry
 	cacheBytes int64
 	memLimit   int64
+	dirty      map[string]struct{}
 }
 
 // GetResult is the outcome of a key lookup.
@@ -85,6 +135,7 @@ func Open(path string, memLimit int64) (*Store, error) {
 	s := &Store{db: db, now: time.Now, memLimit: memLimit}
 	if memLimit > 0 {
 		s.cache = make(map[string]entry)
+		s.dirty = make(map[string]struct{})
 	}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
@@ -173,25 +224,52 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
-// Put upserts value under key, setting expiry to now + ttl. The write hits
-// SQLite first; only on success is the value mirrored into the memory layer.
+// Put upserts value under key with sync durability (the default commit mode):
+// the write hits SQLite first; only on success is the value mirrored into the
+// memory layer.
 func (s *Store) Put(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	expiresAt := s.now().Add(ttl)
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO kv_store (key, value, expires_at) VALUES (?, ?, ?)
-ON CONFLICT(key) DO UPDATE SET value=excluded.value, expires_at=excluded.expires_at`,
-		key, value, expiresAt.Format(time.RFC3339Nano))
-	if err != nil {
-		return fmt.Errorf("store: put %q: %w", key, err)
+	return s.PutWithMode(ctx, key, value, ttl, PutSync)
+}
+
+// PutWithMode upserts value under key, setting expiry to now + ttl, with the
+// durability requested by mode (§5.2):
+//
+//   - PutSync: SQLite upsert first, mirror into memory on success, and clear
+//     any pending dirty state for the key (the persisted copy is current).
+//   - PutAsync: memory write only, key marked dirty; the flush job persists it.
+//   - PutMemory: memory write only, never persisted; pending dirty state for
+//     the key is cleared — the client's latest intent wins over the flusher.
+//
+// Modes other than PutSync require the memory layer; without it they degrade
+// to PutSync (the HTTP layer surfaces the downgrade via a response header).
+func (s *Store) PutWithMode(ctx context.Context, key string, value []byte, ttl time.Duration, mode PutMode) error {
+	if mode != PutSync && !s.caching() {
+		mode = PutSync
 	}
-	if s.caching() {
-		s.cachePut(key, value, expiresAt)
+	expiresAt := s.now().Add(ttl)
+	switch mode {
+	case PutSync:
+		if _, err := s.db.ExecContext(ctx, upsertSQL, key, value, expiresAt.Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("store: put %q: %w", key, err)
+		}
+		if s.caching() {
+			s.cachePut(key, value, expiresAt, false)
+			s.clearDirty(key)
+		}
+	case PutAsync:
+		s.cachePut(key, value, expiresAt, true)
+		s.markDirty(key)
+	case PutMemory:
+		s.cachePut(key, value, expiresAt, true)
+		s.clearDirty(key)
+	default:
+		return fmt.Errorf("store: put %q: unknown commit mode", key)
 	}
 	return nil
 }
 
-func (s *Store) cachePut(key string, value []byte, expiresAt time.Time) {
-	e := entry{value: value, expiresAt: expiresAt}
+func (s *Store) cachePut(key string, value []byte, expiresAt time.Time, volatile bool) {
+	e := entry{value: value, expiresAt: expiresAt, volatile: volatile}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.cache[key]; ok {
@@ -199,6 +277,124 @@ func (s *Store) cachePut(key string, value []byte, expiresAt time.Time) {
 	}
 	s.cache[key] = e
 	s.cacheBytes += entrySize(key, e)
+}
+
+// markDirty/clearDirty/takeDirty maintain the pending-flush set guarded by mu.
+// takeDirty snapshots and clears the set; keys re-marked on failure are picked
+// up by the next flush run (§8.5).
+func (s *Store) markDirty(key string) {
+	s.mu.Lock()
+	s.dirty[key] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *Store) clearDirty(key string) {
+	s.mu.Lock()
+	delete(s.dirty, key)
+	s.mu.Unlock()
+}
+
+func (s *Store) takeDirty() []string {
+	s.mu.Lock()
+	keys := make([]string, 0, len(s.dirty))
+	for key := range s.dirty {
+		keys = append(keys, key)
+	}
+	s.dirty = make(map[string]struct{}, len(keys))
+	s.mu.Unlock()
+	return keys
+}
+
+// DirtyCount reports the number of keys pending flush (§8.5 gauge).
+func (s *Store) DirtyCount() int {
+	if !s.caching() {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.dirty)
+}
+
+// Caching reports whether the in-memory layer is enabled (async/memory commit
+// modes require it).
+func (s *Store) Caching() bool { return s.caching() }
+
+// flushItem is one dirty key queued for persistence by Flush.
+type flushItem struct {
+	key string
+	e   entry
+}
+
+// Flush persists every dirty key into SQLite (§8.5): it snapshots the dirty
+// set, writes the current memory value of each still-live key in batched
+// transactions, and returns the persisted count. On error the un-persisted
+// keys stay dirty for the next run. Clear-on-read means a write racing the
+// flush simply re-marks the key.
+func (s *Store) Flush(ctx context.Context) (int64, error) {
+	if !s.caching() {
+		return 0, nil
+	}
+	keys := s.takeDirty()
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	batch := make([]flushItem, 0, len(keys))
+	s.mu.RLock()
+	for _, key := range keys {
+		if e, ok := s.cache[key]; ok {
+			batch = append(batch, flushItem{key, e})
+		}
+	}
+	s.mu.RUnlock()
+
+	var persisted int64
+	for start := 0; start < len(batch); start += flushBatchSize {
+		end := start + flushBatchSize
+		if end > len(batch) {
+			end = len(batch)
+		}
+		chunk := batch[start:end]
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			s.reMarkDirty(chunk)
+			return persisted, fmt.Errorf("store: flush: begin: %w", err)
+		}
+		for _, it := range chunk {
+			if _, err := tx.ExecContext(ctx, upsertSQL, it.key, it.e.value, it.e.expiresAt.Format(time.RFC3339Nano)); err != nil {
+				_ = tx.Rollback()
+				s.reMarkDirty(chunk)
+				return persisted, fmt.Errorf("store: flush %q: %w", it.key, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			s.reMarkDirty(chunk)
+			return persisted, fmt.Errorf("store: flush: commit: %w", err)
+		}
+		for _, it := range chunk {
+			s.clearVolatile(it.key, it.e.expiresAt)
+		}
+		persisted += int64(len(chunk))
+	}
+	return persisted, nil
+}
+
+// reMarkDirty returns the given batch to the dirty set after a failed run.
+func (s *Store) reMarkDirty(batch []flushItem) {
+	s.mu.Lock()
+	for _, it := range batch {
+		s.dirty[it.key] = struct{}{}
+	}
+	s.mu.Unlock()
+}
+
+func (s *Store) clearVolatile(key string, expiresAt time.Time) {
+	s.mu.Lock()
+	if cur, ok := s.cache[key]; ok && cur.volatile && cur.expiresAt.Equal(expiresAt) {
+		cur.volatile = false
+		s.cache[key] = cur
+	}
+	s.mu.Unlock()
 }
 
 // Get retrieves value for key. With the memory layer enabled the lookup never
@@ -354,6 +550,27 @@ func (s *Store) evictOldest(ctx context.Context, limit int64, batchSize, maxRuns
 		return 0, errors.New("store: evict: batchSize and maxRuns must be positive")
 	}
 	var deleted int64
+
+	// Volatile entries (memory-mode writes and async writes not yet flushed)
+	// never reach SQLite, so the DB-ordered victim query cannot select them;
+	// purge them first so durable rows are only evicted when memory-only data
+	// cannot cover the budget (§8.2).
+	if s.caching() {
+		for run := 0; run < maxRuns; run++ {
+			if s.CacheBytes() < limit {
+				break
+			}
+			n, err := s.purgeVolatileBatch(ctx, batchSize)
+			if err != nil {
+				return deleted, fmt.Errorf("store: evict volatile batch: %w", err)
+			}
+			if n == 0 {
+				break
+			}
+			deleted += n
+		}
+	}
+
 	for run := 0; run < maxRuns; run++ {
 		sz, err := size()
 		if err != nil {
@@ -458,6 +675,57 @@ func (s *Store) deleteOldestBatchCached(ctx context.Context, batch int) (int64, 
 	s.mu.Unlock()
 
 	return deleted, nil
+}
+
+// purgeVolatileBatch evicts one batch of oldest-expiring volatile entries
+// (§8.2): entries whose authoritative copy exists only in memory. A volatile
+// entry may still have a durable row from an earlier sync write (memory-mode
+// shadow); those rows are deleted so the stale value cannot resurface. The
+// cache removal re-validates volatility so a concurrent Put is never dropped.
+func (s *Store) purgeVolatileBatch(ctx context.Context, batch int) (int64, error) {
+	s.mu.Lock()
+	victims := make([]flushItem, 0, len(s.cache))
+	for key, e := range s.cache {
+		if e.volatile {
+			victims = append(victims, flushItem{key, e})
+		}
+	}
+	// Oldest-expiring first (§8.2 eviction order), then bound the batch.
+	sort.Slice(victims, func(i, j int) bool {
+		return victims[i].e.expiresAt.Before(victims[j].e.expiresAt)
+	})
+	if len(victims) > batch {
+		victims = victims[:batch]
+	}
+	s.mu.Unlock()
+
+	if len(victims) == 0 {
+		return 0, nil
+	}
+
+	// Delete durable rows behind the victims — stale shadows of memory-mode
+	// writes or rows a flush persisted before a newer volatile write landed.
+	// Guarding on expires_at keeps a concurrent sync Put's fresh row (a later
+	// expiry) from being wiped by the eviction snapshot.
+	for _, v := range victims {
+		if _, err := s.db.ExecContext(ctx,
+			`DELETE FROM kv_store WHERE key = ? AND expires_at <= ?`,
+			v.key, v.e.expiresAt.Format(time.RFC3339Nano)); err != nil {
+			return 0, err
+		}
+	}
+
+	s.mu.Lock()
+	var removed int64
+	for _, v := range victims {
+		if cur, ok := s.cache[v.key]; ok && cur.volatile && cur.expiresAt.Equal(v.e.expiresAt) {
+			s.cacheBytes -= entrySize(v.key, cur)
+			delete(s.cache, v.key)
+			removed++
+		}
+	}
+	s.mu.Unlock()
+	return removed, nil
 }
 
 func placeholders(n int) string {
