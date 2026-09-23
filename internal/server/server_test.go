@@ -442,6 +442,15 @@ func TestAccessLogFields(t *testing.T) {
 	if rec["status"] != int64(201) {
 		t.Errorf("status = %v, want 201", rec["status"])
 	}
+	if rec["bytes_sent"] != int64(6) {
+		t.Errorf("bytes_sent = %v, want 6 (response body `stored`)", rec["bytes_sent"])
+	}
+	if rec["bytes_received"] != int64(len("payload")) {
+		t.Errorf("bytes_received = %v, want %d (request body `payload`)", rec["bytes_received"], len("payload"))
+	}
+	if rec["bytes_total"] != int64(6+len("payload")) {
+		t.Errorf("bytes_total = %v, want %d (response + request)", rec["bytes_total"], 6+len("payload"))
+	}
 	if rec["request_id"] == "" {
 		t.Error("request_id missing from access log")
 	}

@@ -244,7 +244,9 @@ The three pillars (logs, metrics, traces) are emitted through the OpenTelemetry 
 | `request_id` | middleware | per-request |
 | `trace_id`, `span_id` | OTel context | correlation to traces |
 | `method`, `path`, `route` | middleware | `path` carries the **raw key path** (real key names are expected in logs); `route` keeps the template (`index` / `kvp`). Cardinality is accepted as a deliberate product decision. |
-| `status`, `latency_ms`, `bytes` | middleware | response observability |
+| `status`, `latency_ms`, `bytes_sent` | middleware | response observability: `bytes_sent` = response body bytes written (API bodies only, e.g. `stored`; values are never echoed) |
+| `bytes_received` | middleware | request body bytes read by the handler (0 for GET/HEAD and auth-rejected requests) |
+| `bytes_total` | middleware | total transfer volume = `bytes_sent` + `bytes_received` (single number for bandwidth accounting) |
 | `remote_ip` | middleware | resolved per §7 trusted-proxy rules |
 | `key` | handlers/jobs | key name only; **values and API key never logged** |
 

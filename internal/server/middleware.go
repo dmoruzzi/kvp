@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/subtle"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -61,12 +62,28 @@ func (r *responseRecorder) Flush() {
 
 func (r *responseRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
+// countingBody wraps the request body so the access log can report the request
+// payload bytes actually read — together with the response count it is the
+// per-request transfer volume (bytes_total = bytes_received + bytes).
+type countingBody struct {
+	io.ReadCloser
+	n int64
+}
+
+func (c *countingBody) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
 // accessLog logs one line per request (spec §10.1) and drives the RED request
 // metrics: count, duration, in-flight gauge, and error counter.
 func (s *Server) accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &responseRecorder{ResponseWriter: w}
+		req := &countingBody{ReadCloser: r.Body}
+		r.Body = req
 		method := r.Method
 		route := routeForPath(r.URL.Path)
 		path := r.URL.Path
@@ -93,7 +110,9 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 			"route", route,
 			"status", status,
 			"latency_ms", float64(latency.Microseconds()) / 1000.0,
-			"bytes", rec.bytes,
+			"bytes_sent", rec.bytes,
+			"bytes_received", req.n,
+			"bytes_total", rec.bytes + req.n,
 			"remote_ip", s.clientIP(r),
 			"request_id", requestIDFrom(r.Context()),
 		}
